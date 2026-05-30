@@ -33,9 +33,10 @@ import React, { useEffect, useMemo, useState } from "react";
 import { QRCodeSVG } from "qrcode.react";
 import { io } from "socket.io-client";
 import { APP_CONFIG } from "./config.js";
-
-const DEFAULT_API_BASE = import.meta.env.DEV ? "http://localhost:4100" : window.location.origin;
-const API_BASE = import.meta.env.VITE_API_URL || DEFAULT_API_BASE;
+import { API_BASE, api } from "./lib/api.js";
+import { parseRoute, pathForView } from "./lib/routing.js";
+import { classNames, getParticipantId } from "./lib/utils.js";
+import { accountStorageKey, getSuperadminAuth, getTenantAuth, superadminStorageKey, writeJsonStorage } from "./lib/session.js";
 
 const pollTypeLabels = {
   multiple_choice: "Multiple choice",
@@ -55,29 +56,6 @@ const pollTypeIcons = {
   yes_no: Vote,
 };
 
-const accountStorageKey = `${APP_CONFIG.storagePrefix}-account`;
-const superadminStorageKey = `${APP_CONFIG.storagePrefix}-superadmin`;
-
-function readJsonStorage(key) {
-  try {
-    return JSON.parse(localStorage.getItem(key) || "null");
-  } catch {
-    return null;
-  }
-}
-
-function writeJsonStorage(key, value) {
-  localStorage.setItem(key, JSON.stringify(value));
-}
-
-function getTenantAuth() {
-  return readJsonStorage(accountStorageKey);
-}
-
-function getSuperadminAuth() {
-  return readJsonStorage(superadminStorageKey);
-}
-
 if (!window.__voxlumeFetchWrapped) {
   const rawFetch = window.fetch.bind(window);
   window.fetch = async (input, init = {}) => {
@@ -93,34 +71,6 @@ if (!window.__voxlumeFetchWrapped) {
     window.__voxlumeFetchWrapped = true;
     return rawFetch(input, { ...init, headers });
   };
-}
-
-async function api(path, options = {}) {
-  const response = await fetch(`${API_BASE}${path}`, {
-    ...options,
-    headers: {
-      "Content-Type": "application/json",
-      ...(options.headers || {}),
-    },
-  });
-  if (!response.ok) {
-    const payload = await response.json().catch(() => ({}));
-    throw new Error(payload.error || `Request failed: ${response.status}`);
-  }
-  return response.json();
-}
-
-function parseRoute() {
-  const path = window.location.pathname;
-  const [, route, code, extra] = path.split("/");
-  if (route === "join") return { view: "participant", code: code?.toUpperCase() || "" };
-  if (route === "host") return { view: "host", code: code?.toUpperCase() || "" };
-  if (route === "register") return { view: "register", planKey: code || "starter" };
-  if (route === "verify") return { view: "verify", token: code || extra || "" };
-  if (route === "admin") return { view: "admin", organizationId: code || "" };
-  if (route === "superadmin") return { view: "superadmin" };
-  if (route === "features") return { view: "landing", section: code || extra || "features" };
-  return { view: "landing" };
 }
 
 function useLiveEvent(code, options = {}) {
@@ -168,34 +118,12 @@ function useLiveEvent(code, options = {}) {
   return { event, loading, error };
 }
 
-function getParticipantId() {
-  const key = `${APP_CONFIG.storagePrefix}-participant-id`;
-  let id = localStorage.getItem(key);
-  if (!id) {
-    id = crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2);
-    localStorage.setItem(key, id);
-  }
-  return id;
-}
-
-function classNames(...items) {
-  return items.filter(Boolean).join(" ");
-}
-
 function App() {
   const [route, setRoute] = useState(parseRoute);
 
   function navigate(nextRoute) {
     setRoute(nextRoute);
-    const pathByView = {
-      landing: "/",
-      register: `/register/${nextRoute.planKey || "starter"}`,
-      admin: `/admin/${nextRoute.organizationId || ""}`,
-      superadmin: "/superadmin",
-      participant: `/join/${nextRoute.code || ""}`,
-      host: `/host/${nextRoute.code || ""}`,
-    };
-    const path = pathByView[nextRoute.view] || "/";
+    const path = pathForView(nextRoute);
     window.history.pushState(nextRoute, "", path);
   }
 
@@ -712,6 +640,36 @@ function SuperAdminPanel({ onNavigate }) {
   useEffect(() => {
     api("/api/superadmin/overview").then(setOverview).catch((err) => setError(err.message));
   }, []);
+
+  if (!auth?.token) {
+    return (
+      <div className="auth-shell">
+        <button className="brand brand-button" onClick={() => onNavigate({ view: "landing" })}>
+          <div className="brand-mark">{APP_CONFIG.brandInitials}</div>
+          <strong>{APP_CONFIG.productName}</strong>
+        </button>
+        <section className="auth-grid single">
+          <form className="registration-card" onSubmit={signIn}>
+            <p className="section-label">Superadmin</p>
+            <h2>Platform sign in</h2>
+            <label>
+              Email
+              <input value={login.email} onChange={(event) => setLogin((value) => ({ ...value, email: event.target.value }))} placeholder="admin@voxlume.local" required />
+            </label>
+            <label>
+              Password
+              <input type="password" value={login.password} onChange={(event) => setLogin((value) => ({ ...value, password: event.target.value }))} placeholder="Platform password" required />
+            </label>
+            {loginError && <div className="form-error">{loginError}</div>}
+            <button className="primary-button" type="submit">
+              <LockKeyhole size={16} />
+              Sign in
+            </button>
+          </form>
+        </section>
+      </div>
+    );
+  }
 
   if (!auth?.token) {
     return (
