@@ -657,34 +657,10 @@ function SuperAdminPanel({ onNavigate }) {
       });
   }, [auth?.token]);
 
-  if (!auth?.token) {
-    return (
-      <div className="auth-shell">
-        <button className="brand brand-button" onClick={() => onNavigate({ view: "landing" })}>
-          <div className="brand-mark">{APP_CONFIG.brandInitials}</div>
-          <strong>{APP_CONFIG.productName}</strong>
-        </button>
-        <section className="auth-grid single">
-          <form className="registration-card" onSubmit={signIn}>
-            <p className="section-label">Superadmin</p>
-            <h2>Platform sign in</h2>
-            <label>
-              Email
-              <input value={login.email} onChange={(event) => setLogin((value) => ({ ...value, email: event.target.value }))} placeholder="admin@voxlume.local" required />
-            </label>
-            <label>
-              Password
-              <input type="password" value={login.password} onChange={(event) => setLogin((value) => ({ ...value, password: event.target.value }))} placeholder="Platform password" required />
-            </label>
-            {loginError && <div className="form-error">{loginError}</div>}
-            <button className="primary-button" type="submit">
-              <LockKeyhole size={16} />
-              Sign in
-            </button>
-          </form>
-        </section>
-      </div>
-    );
+  async function refreshOverview() {
+    if (!auth?.token) return;
+    const payload = await api("/api/superadmin/overview");
+    setOverview(payload);
   }
 
   if (!auth?.token) {
@@ -717,12 +693,170 @@ function SuperAdminPanel({ onNavigate }) {
     );
   }
 
-  if (error) return <StateMessage title={error} tone="danger" />;
+  if (!auth?.token) {
+    return (
+      <div className="auth-shell">
+        <button className="brand brand-button" onClick={() => onNavigate({ view: "landing" })}>
+          <div className="brand-mark">{APP_CONFIG.brandInitials}</div>
+          <strong>{APP_CONFIG.productName}</strong>
+        </button>
+        <section className="auth-grid single">
+          <form className="registration-card" onSubmit={signIn}>
+            <p className="section-label">Superadmin</p>
+            <h2>Platform sign in</h2>
+            <label>
+              Email
+              <input value={login.email} onChange={(event) => setLogin((value) => ({ ...value, email: event.target.value }))} placeholder="admin@voxlume.local" required />
+            </label>
+            <label>
+              Password
+              <input type="password" value={login.password} onChange={(event) => setLogin((value) => ({ ...value, password: event.target.value }))} placeholder="Platform password" required />
+            </label>
+            {loginError && <div className="form-error">{loginError}</div>}
+            <button className="primary-button" type="submit">
+              <LockKeyhole size={16} />
+              Sign in
+            </button>
+          </form>
+        </section>
+      </div>
+    );
+  }
+
   if (!overview) return <StateMessage title="Loading platform overview" />;
 
   return (
+    <SuperAdminWorkspace
+      auth={auth}
+      error={error}
+      overview={overview}
+      onNavigate={onNavigate}
+      reloadOverview={refreshOverview}
+      signOut={signOut}
+    />
+  );
+}
+
+function SuperAdminWorkspace({ auth, error, overview, onNavigate, reloadOverview, signOut }) {
+  const [selectedOrganizationId, setSelectedOrganizationId] = useState(overview.organizations[0]?.id || "");
+  const [organizationDetail, setOrganizationDetail] = useState(null);
+  const [organizationForm, setOrganizationForm] = useState({ name: "", status: "active", planKey: "starter" });
+  const [newUser, setNewUser] = useState({ name: "", email: "", password: "", role: "admin" });
+  const [planDrafts, setPlanDrafts] = useState({});
+  const [statusMessage, setStatusMessage] = useState("");
+
+  useEffect(() => {
+    if (overview.organizations.length && !selectedOrganizationId) {
+      setSelectedOrganizationId(overview.organizations[0].id);
+    }
+  }, [overview.organizations, selectedOrganizationId]);
+
+  useEffect(() => {
+    setPlanDrafts(
+      Object.fromEntries(
+        (overview.plans || []).map((plan) => [
+          plan.key,
+          {
+            ...plan,
+            featuresText: (plan.features || []).join(", "),
+          },
+        ]),
+      ),
+    );
+  }, [overview.plans]);
+
+  useEffect(() => {
+    if (!selectedOrganizationId) return;
+    api(`/api/superadmin/organizations/${selectedOrganizationId}`)
+      .then((payload) => {
+        setOrganizationDetail(payload);
+        setOrganizationForm({
+          name: payload.organization.name,
+          status: payload.organization.status,
+          planKey: payload.organization.planKey,
+        });
+        setNewUser({ name: "", email: "", password: "", role: "admin" });
+        setStatusMessage("");
+      })
+      .catch((err) => setStatusMessage(err.message));
+  }, [selectedOrganizationId]);
+
+  async function saveOrganization(event) {
+    event.preventDefault();
+    setStatusMessage("");
+    const updated = await api(`/api/superadmin/organizations/${selectedOrganizationId}`, {
+      method: "PATCH",
+      body: JSON.stringify(organizationForm),
+    });
+    setOrganizationDetail(updated);
+    await reloadOverview();
+    setStatusMessage("Organization updated");
+  }
+
+  async function addUser(event) {
+    event.preventDefault();
+    setStatusMessage("");
+    const updated = await api(`/api/superadmin/organizations/${selectedOrganizationId}/users`, {
+      method: "POST",
+      body: JSON.stringify(newUser),
+    });
+    setOrganizationDetail(updated);
+    setNewUser({ name: "", email: "", password: "", role: "admin" });
+    await reloadOverview();
+    setStatusMessage("User added");
+  }
+
+  async function removeUser(userId) {
+    setStatusMessage("");
+    const updated = await api(`/api/superadmin/users/${userId}`, { method: "DELETE" });
+    setOrganizationDetail(updated);
+    await reloadOverview();
+    setStatusMessage("User removed");
+  }
+
+  async function savePlan(planKey) {
+    const draft = planDrafts[planKey];
+    if (!draft) return;
+    setStatusMessage("");
+    await api(`/api/superadmin/plans/${planKey}`, {
+      method: "PUT",
+      body: JSON.stringify({
+        name: draft.name,
+        price: draft.price,
+        cadence: draft.cadence,
+        eventLimit: Number(draft.eventLimit),
+        seatLimit: Number(draft.seatLimit),
+        participantLimit: Number(draft.participantLimit),
+        features: String(draft.featuresText || "")
+          .split(",")
+          .map((item) => item.trim())
+          .filter(Boolean),
+      }),
+    });
+    await reloadOverview();
+    setStatusMessage(`${draft.name} plan updated`);
+  }
+
+  async function resetPlan(planKey) {
+    setStatusMessage("");
+    await api(`/api/superadmin/plans/${planKey}`, { method: "DELETE" });
+    await reloadOverview();
+    setStatusMessage("Plan reset to default");
+  }
+
+  const selectedOrganization = organizationDetail?.organization;
+
+  return (
     <div className="admin-shell">
-      <AdminHeader title="Platform command center" eyebrow="Superadmin" onNavigate={onNavigate} />
+      <AdminHeader title="Platform command center" eyebrow={`Superadmin · ${auth.email}`} onNavigate={onNavigate} />
+      <div className="topbar-actions" style={{ marginTop: -6, marginBottom: 10 }}>
+        <button className="secondary-button" onClick={signOut}>
+          <X size={16} />
+          Sign out
+        </button>
+      </div>
+      {error && <StateMessage title={error} tone="danger" />}
+      {statusMessage && <StateMessage title={statusMessage} tone="success" />}
       <section className="metric-grid">
         <MetricCard icon={Building2} label="Organizations" value={overview.metrics.organizations} />
         <MetricCard icon={Users} label="Admin users" value={overview.metrics.users} accent="green" />
@@ -733,31 +867,206 @@ function SuperAdminPanel({ onNavigate }) {
         <div className="panel">
           <div className="panel-heading">
             <div>
-              <p className="section-label">Tenants</p>
-              <h2>Organizations and SaaS admins</h2>
+              <p className="section-label">Organizations</p>
+              <h2>Tenants and admin seats</h2>
             </div>
           </div>
           <div className="stack">
             {overview.organizations.map((organization) => (
-              <button className="admin-row" key={organization.id} onClick={() => onNavigate({ view: "admin", organizationId: organization.id })}>
+              <button
+                className={classNames("admin-row", selectedOrganizationId === organization.id && "active")}
+                key={organization.id}
+                onClick={() => setSelectedOrganizationId(organization.id)}
+              >
                 <span>
                   <strong>{organization.name}</strong>
-                  <small>{organization.users} users · {organization.events} events · {organization.status}</small>
+                  <small>
+                    {organization.users} users · {organization.events} events · {organization.status}
+                  </small>
                 </span>
                 <span className="badge">{organization.plan.name}</span>
               </button>
             ))}
             {!overview.organizations.length && <StateMessage title="No organizations registered yet" />}
           </div>
+
+          {selectedOrganization && (
+            <form className="panel nested" onSubmit={saveOrganization}>
+              <div className="panel-heading">
+                <div>
+                  <p className="section-label">Selected tenant</p>
+                  <h2>{selectedOrganization.name}</h2>
+                </div>
+              </div>
+              <label>
+                Workspace name
+                <input value={organizationForm.name} onChange={(event) => setOrganizationForm((current) => ({ ...current, name: event.target.value }))} />
+              </label>
+              <label>
+                Plan
+                <select value={organizationForm.planKey} onChange={(event) => setOrganizationForm((current) => ({ ...current, planKey: event.target.value }))}>
+                  {overview.plans.map((plan) => (
+                    <option key={plan.key} value={plan.key}>
+                      {plan.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                Status
+                <select value={organizationForm.status} onChange={(event) => setOrganizationForm((current) => ({ ...current, status: event.target.value }))}>
+                  <option value="active">Active</option>
+                  <option value="paused">Paused</option>
+                  <option value="archived">Archived</option>
+                </select>
+              </label>
+              <button className="primary-button" type="submit">
+                Save organization
+              </button>
+
+              <div className="divider" />
+
+              <div className="panel-heading" style={{ marginBottom: 0 }}>
+                <div>
+                  <p className="section-label">Users</p>
+                  <h2>Tenant admins</h2>
+                </div>
+              </div>
+              <div className="stack">
+                {(organizationDetail?.users || []).map((user) => (
+                  <div className="admin-row static" key={user.id}>
+                    <span>
+                      <strong>{user.name}</strong>
+                      <small>{user.email}</small>
+                    </span>
+                    <div className="topbar-actions">
+                      <span className="badge">{user.role}</span>
+                      <button className="secondary-button" type="button" onClick={() => removeUser(user.id)}>
+                        Remove
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <div className="stack">
+                <label>
+                  User name
+                  <input value={newUser.name} onChange={(event) => setNewUser((current) => ({ ...current, name: event.target.value }))} />
+                </label>
+                <label>
+                  User email
+                  <input type="email" value={newUser.email} onChange={(event) => setNewUser((current) => ({ ...current, email: event.target.value }))} />
+                </label>
+                <label>
+                  Password
+                  <input type="password" value={newUser.password} onChange={(event) => setNewUser((current) => ({ ...current, password: event.target.value }))} />
+                </label>
+                <label>
+                  Role
+                  <select value={newUser.role} onChange={(event) => setNewUser((current) => ({ ...current, role: event.target.value }))}>
+                    <option value="admin">Admin</option>
+                    <option value="host">Host</option>
+                    <option value="viewer">Viewer</option>
+                  </select>
+                </label>
+                <button className="secondary-button" type="button" onClick={addUser}>
+                  Add user
+                </button>
+              </div>
+            </form>
+          )}
         </div>
+
         <div className="panel">
           <div className="panel-heading">
             <div>
-              <p className="section-label">Plan catalog</p>
-              <h2>SaaS plans</h2>
+              <p className="section-label">Plans</p>
+              <h2>Manage SaaS plans</h2>
             </div>
           </div>
-          <PlanGrid plans={overview.plans} selectedPlanKey="" onSelect={(planKey) => onNavigate({ view: "register", planKey })} />
+          <div className="stack">
+            {Object.values(planDrafts).map((plan) => (
+              <div className="panel nested" key={plan.key}>
+                <div className="panel-heading" style={{ marginBottom: 0 }}>
+                  <div>
+                    <p className="section-label">{plan.key}</p>
+                    <h2>{plan.name}</h2>
+                  </div>
+                  <div className="badge">{plan.price}</div>
+                </div>
+                <label>
+                  Name
+                  <input value={plan.name} onChange={(event) => setPlanDrafts((current) => ({ ...current, [plan.key]: { ...current[plan.key], name: event.target.value } }))} />
+                </label>
+                <label>
+                  Price
+                  <input value={plan.price} onChange={(event) => setPlanDrafts((current) => ({ ...current, [plan.key]: { ...current[plan.key], price: event.target.value } }))} />
+                </label>
+                <label>
+                  Cadence
+                  <input value={plan.cadence} onChange={(event) => setPlanDrafts((current) => ({ ...current, [plan.key]: { ...current[plan.key], cadence: event.target.value } }))} />
+                </label>
+                <label>
+                  Event limit
+                  <input type="number" min="1" value={plan.eventLimit} onChange={(event) => setPlanDrafts((current) => ({ ...current, [plan.key]: { ...current[plan.key], eventLimit: event.target.value } }))} />
+                </label>
+                <label>
+                  Seat limit
+                  <input type="number" min="1" value={plan.seatLimit} onChange={(event) => setPlanDrafts((current) => ({ ...current, [plan.key]: { ...current[plan.key], seatLimit: event.target.value } }))} />
+                </label>
+                <label>
+                  Participant limit
+                  <input type="number" min="1" value={plan.participantLimit} onChange={(event) => setPlanDrafts((current) => ({ ...current, [plan.key]: { ...current[plan.key], participantLimit: event.target.value } }))} />
+                </label>
+                <label>
+                  Features
+                  <textarea
+                    rows={3}
+                    value={plan.featuresText}
+                    onChange={(event) =>
+                      setPlanDrafts((current) => ({
+                        ...current,
+                        [plan.key]: { ...current[plan.key], featuresText: event.target.value },
+                      }))
+                    }
+                  />
+                </label>
+                <div className="topbar-actions">
+                  <button className="primary-button" type="button" onClick={() => savePlan(plan.key)}>
+                    Save plan
+                  </button>
+                  <button className="secondary-button" type="button" onClick={() => resetPlan(plan.key)}>
+                    Reset
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      <section className="content-grid two">
+        <div className="panel">
+          <div className="panel-heading">
+            <div>
+              <p className="section-label">Recent events</p>
+              <h2>Latest activity</h2>
+            </div>
+          </div>
+          <div className="stack">
+            {(overview.recentEvents || []).map((event) => (
+              <button className="admin-row" key={event.code} onClick={() => onNavigate({ view: "host", code: event.code })}>
+                <span>
+                  <strong>{event.title}</strong>
+                  <small>
+                    {event.code} · {event.analytics.participants} participants
+                  </small>
+                </span>
+                <ChevronRight size={16} />
+              </button>
+            ))}
+          </div>
         </div>
       </section>
     </div>

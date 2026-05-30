@@ -216,6 +216,20 @@ export class PostgresEventRepository {
         updated_at TIMESTAMPTZ NOT NULL
       );
 
+      CREATE TABLE IF NOT EXISTS plans (
+        key TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        price TEXT NOT NULL,
+        cadence TEXT NOT NULL,
+        event_limit INTEGER NOT NULL,
+        seat_limit INTEGER NOT NULL,
+        participant_limit INTEGER NOT NULL,
+        features_json JSONB NOT NULL,
+        is_custom INTEGER NOT NULL DEFAULT 0,
+        created_at TIMESTAMPTZ NOT NULL,
+        updated_at TIMESTAMPTZ NOT NULL
+      );
+
       CREATE TABLE IF NOT EXISTS email_verification_tokens (
         id TEXT PRIMARY KEY,
         user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -247,11 +261,13 @@ export class PostgresEventRepository {
       CREATE INDEX IF NOT EXISTS idx_poll_responses_poll ON poll_responses(poll_id);
       CREATE INDEX IF NOT EXISTS idx_quizzes_event ON quizzes(event_id, status);
       CREATE INDEX IF NOT EXISTS idx_quiz_answers_quiz ON quiz_answers(quiz_id);
+      CREATE INDEX IF NOT EXISTS idx_plans_key ON plans(key);
     `);
   }
 
   async seedIfEmpty() {
     await this.seedPlatformAdminIfEmpty();
+    await this.seedPlansIfEmpty();
     const { rows } = await this.query("SELECT COUNT(*)::int AS count FROM events");
     if (rows[0].count === 0) {
       const event = await this.createEvent({
@@ -298,6 +314,32 @@ export class PostgresEventRepository {
         createdAt,
       ],
     );
+  }
+
+  async seedPlansIfEmpty() {
+    const { rows } = await this.query("SELECT COUNT(*)::int AS count FROM plans");
+    if (rows[0].count > 0) return;
+    const createdAt = now();
+    for (const plan of SAAS_PLANS) {
+      await this.query(
+        `INSERT INTO plans (
+          key, name, price, cadence, event_limit, seat_limit, participant_limit, features_json, is_custom, created_at, updated_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11)`,
+        [
+          plan.key,
+          plan.name,
+          plan.price,
+          plan.cadence,
+          plan.eventLimit,
+          plan.seatLimit,
+          plan.participantLimit,
+          JSON.stringify(plan.features || []),
+          0,
+          createdAt,
+          createdAt,
+        ],
+      );
+    }
   }
 
   async ensureDemoEvent() {
@@ -922,8 +964,146 @@ export class PostgresEventRepository {
     return this.getSerializedEventByCode(code);
   }
 
-  getPlans() {
-    return SAAS_PLANS;
+  async getPlans() {
+    return this.getPlansWithOverrides();
+  }
+
+  async getPlansWithOverrides() {
+    const { rows } = await this.query("SELECT * FROM plans ORDER BY created_at ASC");
+    const overrides = new Map(rows.map((row) => [row.key, row]));
+    return SAAS_PLANS.map((plan) => {
+      const row = overrides.get(plan.key);
+      if (!row) return plan;
+      return {
+        ...plan,
+        name: row.name,
+        price: row.price,
+        cadence: row.cadence,
+        eventLimit: row.event_limit,
+        seatLimit: row.seat_limit,
+        participantLimit: row.participant_limit,
+        features: parseJson(row.features_json, plan.features),
+      };
+    });
+  }
+
+  async getPlanByKey(planKey) {
+    return (await this.getPlansWithOverrides()).find((plan) => plan.key === normalizePlanKey(planKey));
+  }
+
+  async updatePlan(planKey, input = {}) {
+    const key = normalizePlanKey(planKey);
+    const existing = SAAS_PLANS.find((plan) => plan.key === key);
+    if (!existing) return null;
+    const updatedAt = now();
+    const features = Array.isArray(input.features)
+      ? input.features
+      : String(input.features || "")
+          .split(",")
+          .map((item) => item.trim())
+          .filter(Boolean);
+    await this.query(
+      `INSERT INTO plans (
+        key, name, price, cadence, event_limit, seat_limit, participant_limit, features_json, is_custom, created_at, updated_at
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, 0, $9, $10)
+      ON CONFLICT (key) DO UPDATE SET
+        name = EXCLUDED.name,
+        price = EXCLUDED.price,
+        cadence = EXCLUDED.cadence,
+        event_limit = EXCLUDED.event_limit,
+        seat_limit = EXCLUDED.seat_limit,
+        participant_limit = EXCLUDED.participant_limit,
+        features_json = EXCLUDED.features_json,
+        updated_at = EXCLUDED.updated_at`,
+      [
+        key,
+        String(input.name || existing.name).trim(),
+        String(input.price || existing.price).trim(),
+        String(input.cadence || existing.cadence).trim(),
+        Number.isFinite(Number(input.eventLimit)) ? Number(input.eventLimit) : existing.eventLimit,
+        Number.isFinite(Number(input.seatLimit)) ? Number(input.seatLimit) : existing.seatLimit,
+        Number.isFinite(Number(input.participantLimit)) ? Number(input.participantLimit) : existing.participantLimit,
+        JSON.stringify(features.length ? features : existing.features),
+        updatedAt,
+        updatedAt,
+      ],
+    );
+    return this.getPlanByKey(key);
+  }
+
+  async resetPlan(planKey) {
+    const key = normalizePlanKey(planKey);
+    await this.query("DELETE FROM plans WHERE key = $1", [key]);
+    return this.getPlanByKey(key);
+  }
+
+  async updateOrganization(organizationId, input = {}) {
+    const currentResult = await this.query("SELECT * FROM organizations WHERE id = $1", [organizationId]);
+    const current = currentResult.rows[0];
+    if (!current) return null;
+    await this.query("UPDATE organizations SET name = $1, status = $2, plan_key = $3, updated_at = $4 WHERE id = $5", [
+      String(input.name || current.name).trim(),
+      String(input.status || current.status).trim(),
+      normalizePlanKey(input.planKey || current.plan_key),
+      now(),
+      organizationId,
+    ]);
+    return this.getOrganizationAdmin(organizationId);
+  }
+
+  async createOrganizationUser(organizationId, input = {}) {
+    const organizationResult = await this.query("SELECT id FROM organizations WHERE id = $1", [organizationId]);
+    if (!organizationResult.rows[0]) return null;
+    const createdAt = now();
+    await this.query(
+      `INSERT INTO users (
+        id, organization_id, name, email, role, password_hash, verified_at, created_at, updated_at
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+      [
+        makeId(),
+        organizationId,
+        String(input.name || "Team member").trim(),
+        String(input.email || "").trim().toLowerCase(),
+        String(input.role || "admin").trim(),
+        hashPassword(input.password || "VoxLume123!"),
+        input.verifiedAt === false ? null : createdAt,
+        createdAt,
+        createdAt,
+      ],
+    );
+    return this.getOrganizationAdmin(organizationId);
+  }
+
+  async updateOrganizationUser(userId, input = {}) {
+    const currentResult = await this.query("SELECT * FROM users WHERE id = $1", [userId]);
+    const current = currentResult.rows[0];
+    if (!current) return null;
+    await this.query(
+      `UPDATE users SET
+        name = $1,
+        email = $2,
+        role = $3,
+        password_hash = COALESCE($4, password_hash),
+        updated_at = $5
+       WHERE id = $6`,
+      [
+        String(input.name || current.name).trim(),
+        String(input.email || current.email).trim().toLowerCase(),
+        String(input.role || current.role).trim(),
+        input.password ? hashPassword(input.password) : null,
+        now(),
+        userId,
+      ],
+    );
+    return this.getOrganizationAdmin(current.organization_id);
+  }
+
+  async deleteOrganizationUser(userId) {
+    const currentResult = await this.query("SELECT organization_id FROM users WHERE id = $1", [userId]);
+    const current = currentResult.rows[0];
+    if (!current) return null;
+    await this.query("DELETE FROM users WHERE id = $1", [userId]);
+    return this.getOrganizationAdmin(current.organization_id);
   }
 
   async createOrganizationWithAdmin(input = {}) {
@@ -956,8 +1136,8 @@ export class PostgresEventRepository {
       );
       await this.query(
         `INSERT INTO users (
-          id, organization_id, name, email, role, password_hash, created_at, updated_at
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+          id, organization_id, name, email, role, password_hash, verified_at, created_at, updated_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
         [
           userId,
           organizationId,
@@ -965,6 +1145,7 @@ export class PostgresEventRepository {
           String(input.email || "").trim().toLowerCase(),
           "admin",
           hashPassword(input.password),
+          createdAt,
           createdAt,
           createdAt,
         ],
@@ -991,7 +1172,7 @@ export class PostgresEventRepository {
       createdAt: user.created_at.toISOString(),
     }));
     const events = await this.getEventsByOrganization(organizationId);
-    const plan = getPlan(organization.plan_key);
+    const plan = await this.getPlanByKey(organization.plan_key);
     return {
       organization: {
         id: organization.id,
@@ -1037,7 +1218,7 @@ export class PostgresEventRepository {
     );
     const events = await this.getEvents();
     return {
-      plans: SAAS_PLANS,
+      plans: await this.getPlansWithOverrides(),
       metrics: {
         organizations: organizations.length,
         users: organizations.reduce((total, organization) => total + organization.users, 0),

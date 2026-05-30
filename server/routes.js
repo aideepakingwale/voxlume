@@ -156,8 +156,8 @@ export function createApiRouter({ repository, emitEvent }) {
     res.status(201).json(event);
   });
 
-  router.get(paths("/plans"), (req, res) => {
-    res.json(repository.getPlans());
+  router.get(paths("/plans"), async (req, res) => {
+    res.json(await repository.getPlans());
   });
 
   router.post(paths("/register"), async (req, res) => {
@@ -213,6 +213,83 @@ export function createApiRouter({ repository, emitEvent }) {
     const auth = requireSuperadminAuth(req, res);
     if (!auth) return;
     res.json(await repository.getPlatformOverview());
+  });
+
+  router.get(paths("/superadmin/organizations/:organizationId"), async (req, res) => {
+    const auth = requireSuperadminAuth(req, res);
+    if (!auth) return;
+    const organization = await repository.getOrganizationAdmin(req.params.organizationId);
+    if (!organization) {
+      res.status(404).json({ error: "Organization not found" });
+      return;
+    }
+    res.json(organization);
+  });
+
+  router.patch(paths("/superadmin/organizations/:organizationId"), async (req, res) => {
+    const auth = requireSuperadminAuth(req, res);
+    if (!auth) return;
+    const organization = await repository.updateOrganization(req.params.organizationId, req.body || {});
+    if (!organization) {
+      res.status(404).json({ error: "Organization not found" });
+      return;
+    }
+    res.json(organization);
+  });
+
+  router.post(paths("/superadmin/organizations/:organizationId/users"), async (req, res) => {
+    const auth = requireSuperadminAuth(req, res);
+    if (!auth) return;
+    const updated = await repository.createOrganizationUser(req.params.organizationId, req.body || {});
+    if (!updated) {
+      res.status(404).json({ error: "Organization not found" });
+      return;
+    }
+    res.status(201).json(updated);
+  });
+
+  router.patch(paths("/superadmin/users/:userId"), async (req, res) => {
+    const auth = requireSuperadminAuth(req, res);
+    if (!auth) return;
+    const updated = await repository.updateOrganizationUser(req.params.userId, req.body || {});
+    if (!updated) {
+      res.status(404).json({ error: "User not found" });
+      return;
+    }
+    res.json(updated);
+  });
+
+  router.delete(paths("/superadmin/users/:userId"), async (req, res) => {
+    const auth = requireSuperadminAuth(req, res);
+    if (!auth) return;
+    const updated = await repository.deleteOrganizationUser(req.params.userId);
+    if (!updated) {
+      res.status(404).json({ error: "User not found" });
+      return;
+    }
+    res.json(updated);
+  });
+
+  router.put(paths("/superadmin/plans/:planKey"), async (req, res) => {
+    const auth = requireSuperadminAuth(req, res);
+    if (!auth) return;
+    const plan = await repository.updatePlan(req.params.planKey, req.body || {});
+    if (!plan) {
+      res.status(404).json({ error: "Plan not found" });
+      return;
+    }
+    res.json(plan);
+  });
+
+  router.delete(paths("/superadmin/plans/:planKey"), async (req, res) => {
+    const auth = requireSuperadminAuth(req, res);
+    if (!auth) return;
+    const plan = await repository.resetPlan(req.params.planKey);
+    if (!plan) {
+      res.status(404).json({ error: "Plan not found" });
+      return;
+    }
+    res.json(plan);
   });
 
   router.get(paths("/events/:code"), async (req, res) => {
