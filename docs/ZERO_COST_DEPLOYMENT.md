@@ -110,6 +110,8 @@ APP_NAME=VoxLume
 PGSSLMODE=require
 ```
 
+Do not set `VITE_API_URL` on Render. The production frontend automatically uses the deployed Render origin for API and Socket.IO traffic.
+
 7. Click Apply / Deploy.
 
 ### Option B: Manual Render Web Service
@@ -135,6 +137,8 @@ APP_NAME=VoxLume
 DATABASE_URL=<your Neon pooled connection string>
 PGSSLMODE=require
 ```
+
+Do not add `VITE_API_URL` for this Render deployment unless you intentionally host the API on a different domain.
 
 6. Deploy.
 

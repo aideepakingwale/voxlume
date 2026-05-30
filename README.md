@@ -81,6 +81,8 @@ Plan: free
 
 Set `DATABASE_URL` as a secret environment variable in Render.
 
+Do not set `VITE_API_URL` for the normal Render deployment. The frontend will automatically use the deployed Render origin for API and Socket.IO calls.
+
 ## Notes
 
 - This codebase is intentionally production-only.

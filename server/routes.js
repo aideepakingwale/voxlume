@@ -4,6 +4,7 @@ import { sendCsv, sendPdf, sendXlsx } from "./exporters.js";
 
 export function createApiRouter({ repository, emitEvent }) {
   const router = express.Router();
+  const paths = (path) => [path, path.endsWith("/") ? path.slice(0, -1) : `${path}/`];
 
   async function requireEvent(req, res) {
     const event = await repository.getEventByCode(req.params.code);
@@ -28,87 +29,87 @@ export function createApiRouter({ repository, emitEvent }) {
     }
   }
 
-  router.get("/health", async (req, res) => {
+  router.get(paths("/health"), async (req, res) => {
     const events = await repository.getEvents();
     res.json({ ok: true, events: events.length, timestamp: new Date().toISOString() });
   });
 
-  router.get("/events", async (req, res) => {
+  router.get(paths("/events"), async (req, res) => {
     res.json(await repository.getEvents());
   });
 
-  router.post("/events", async (req, res) => {
+  router.post(paths("/events"), async (req, res) => {
     const event = await repository.createEvent(req.body);
     emitEvent(event);
     res.status(201).json(event);
   });
 
-  router.get("/events/:code", async (req, res) => {
+  router.get(paths("/events/:code"), async (req, res) => {
     const event = await requireEvent(req, res);
     if (event) res.json(serializeEvent(event));
   });
 
-  router.patch("/events/:code/security", async (req, res) => {
+  router.patch(paths("/events/:code/security"), async (req, res) => {
     await saveAndEmit(res, req.params.code, () => repository.updateSecurity(req.params.code, req.body));
   });
 
-  router.post("/events/:code/questions", async (req, res) => {
+  router.post(paths("/events/:code/questions"), async (req, res) => {
     await saveAndEmit(res, req.params.code, () => repository.addQuestion(req.params.code, req.body));
   });
 
-  router.post("/events/:code/questions/:questionId/upvote", async (req, res) => {
+  router.post(paths("/events/:code/questions/:questionId/upvote"), async (req, res) => {
     const participantId = String(req.body.participantId || makeId());
     await saveAndEmit(res, req.params.code, () =>
       repository.toggleQuestionUpvote(req.params.code, req.params.questionId, participantId),
     );
   });
 
-  router.patch("/events/:code/questions/:questionId", async (req, res) => {
+  router.patch(paths("/events/:code/questions/:questionId"), async (req, res) => {
     await saveAndEmit(res, req.params.code, () => repository.patchQuestion(req.params.code, req.params.questionId, req.body));
   });
 
-  router.post("/events/:code/polls", async (req, res) => {
+  router.post(paths("/events/:code/polls"), async (req, res) => {
     await saveAndEmit(res, req.params.code, () => repository.addPoll(req.params.code, req.body));
   });
 
-  router.post("/events/:code/surveys", async (req, res) => {
+  router.post(paths("/events/:code/surveys"), async (req, res) => {
     await saveAndEmit(res, req.params.code, () => repository.createSurvey(req.params.code, req.body));
   });
 
-  router.post("/events/:code/polls/:pollId/activate", async (req, res) => {
+  router.post(paths("/events/:code/polls/:pollId/activate"), async (req, res) => {
     await saveAndEmit(res, req.params.code, () => repository.activatePoll(req.params.code, req.params.pollId));
   });
 
-  router.post("/events/:code/polls/:pollId/close", async (req, res) => {
+  router.post(paths("/events/:code/polls/:pollId/close"), async (req, res) => {
     await saveAndEmit(res, req.params.code, () => repository.closePoll(req.params.code, req.params.pollId));
   });
 
-  router.post("/events/:code/polls/:pollId/responses", async (req, res) => {
+  router.post(paths("/events/:code/polls/:pollId/responses"), async (req, res) => {
     await saveAndEmit(res, req.params.code, () => repository.addPollResponse(req.params.code, req.params.pollId, req.body));
   });
 
-  router.post("/events/:code/quizzes", async (req, res) => {
+  router.post(paths("/events/:code/quizzes"), async (req, res) => {
     await saveAndEmit(res, req.params.code, () => repository.addQuiz(req.params.code, req.body));
   });
 
-  router.post("/events/:code/quizzes/:quizId/start", async (req, res) => {
+  router.post(paths("/events/:code/quizzes/:quizId/start"), async (req, res) => {
     await saveAndEmit(res, req.params.code, () => repository.startQuiz(req.params.code, req.params.quizId));
   });
 
-  router.post("/events/:code/quizzes/:quizId/advance", async (req, res) => {
+  router.post(paths("/events/:code/quizzes/:quizId/advance"), async (req, res) => {
     await saveAndEmit(res, req.params.code, () => repository.advanceQuiz(req.params.code, req.params.quizId));
   });
 
-  router.post("/events/:code/quizzes/:quizId/answers", async (req, res) => {
+  router.post(paths("/events/:code/quizzes/:quizId/answers"), async (req, res) => {
     await saveAndEmit(res, req.params.code, () => repository.addQuizAnswer(req.params.code, req.params.quizId, req.body));
   });
 
-  router.get("/events/:code/analytics", async (req, res) => {
+  router.get(paths("/events/:code/analytics"), async (req, res) => {
     const event = await requireEvent(req, res);
     if (event) res.json(serializeEvent(event).analytics);
   });
 
-  router.get("/events/:code/export/:format", async (req, res) => {
+  router.get(paths("/events/:code/export/:format"), async (req, res) => {
     const event = await requireEvent(req, res);
     if (!event) return;
     const serialized = serializeEvent(event);
@@ -119,7 +120,7 @@ export function createApiRouter({ repository, emitEvent }) {
     res.status(400).json({ error: "Unsupported export format" });
   });
 
-  router.post("/ai/suggest", (req, res) => {
+  router.post(paths("/ai/suggest"), (req, res) => {
     const goal = String(req.body.goal || "increase audience engagement").trim();
     const audience = String(req.body.audience || "a mixed live and remote audience").trim();
     const tone = String(req.body.tone || "clear").trim();
@@ -161,7 +162,7 @@ export function createApiRouter({ repository, emitEvent }) {
     });
   });
 
-  router.post("/ai/refine", (req, res) => {
+  router.post(paths("/ai/refine"), (req, res) => {
     const text = String(req.body.text || "").trim();
     if (!text) {
       res.status(400).json({ error: "Text is required" });

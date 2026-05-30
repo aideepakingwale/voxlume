@@ -30,7 +30,8 @@ import { QRCodeSVG } from "qrcode.react";
 import { io } from "socket.io-client";
 import { APP_CONFIG } from "./config.js";
 
-const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:4100";
+const DEFAULT_API_BASE = import.meta.env.DEV ? "http://localhost:4100" : window.location.origin;
+const API_BASE = import.meta.env.VITE_API_URL || DEFAULT_API_BASE;
 
 const pollTypeLabels = {
   multiple_choice: "Multiple choice",
