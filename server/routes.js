@@ -1,10 +1,33 @@
 import express from "express";
-import { makeId, serializeEvent } from "./domain.js";
+import { makeId, serializeEvent, signSuperadminToken, signTenantToken, verifySuperadminToken, verifyTenantToken } from "./domain.js";
 import { sendCsv, sendPdf, sendXlsx } from "./exporters.js";
 
 export function createApiRouter({ repository, emitEvent }) {
   const router = express.Router();
   const paths = (path) => [path, path.endsWith("/") ? path.slice(0, -1) : `${path}/`];
+
+  function getBearerToken(req) {
+    const value = String(req.headers.authorization || "");
+    return value.toLowerCase().startsWith("bearer ") ? value.slice(7).trim() : "";
+  }
+
+  function requireTenantAuth(req, res) {
+    const payload = verifyTenantToken(getBearerToken(req));
+    if (!payload) {
+      res.status(401).json({ error: "Tenant authentication required" });
+      return null;
+    }
+    return payload;
+  }
+
+  function requireSuperadminAuth(req, res) {
+    const payload = verifySuperadminToken(getBearerToken(req));
+    if (!payload) {
+      res.status(401).json({ error: "Superadmin authentication required" });
+      return null;
+    }
+    return payload;
+  }
 
   async function requireEvent(req, res) {
     const event = await repository.getEventByCode(req.params.code);
@@ -34,12 +57,59 @@ export function createApiRouter({ repository, emitEvent }) {
     res.json({ ok: true, events: events.length, timestamp: new Date().toISOString() });
   });
 
+  router.post(paths("/login"), async (req, res) => {
+    const payload = req.body || {};
+    if (!payload.email || !payload.password) {
+      res.status(400).json({ error: "Email and password are required" });
+      return;
+    }
+    const user = await repository.authenticateTenantAdmin(payload.email, payload.password);
+    if (!user) {
+      res.status(401).json({ error: "Invalid email or password" });
+      return;
+    }
+    const token = signTenantToken({
+      orgId: user.organization.id,
+      userId: user.id,
+      email: user.email,
+      role: user.role,
+    });
+    res.json({ ...user, token });
+  });
+
+  router.post(paths("/superadmin/login"), async (req, res) => {
+    const payload = req.body || {};
+    if (!payload.email || !payload.password) {
+      res.status(400).json({ error: "Email and password are required" });
+      return;
+    }
+    const admin = await repository.authenticatePlatformAdmin(payload.email, payload.password);
+    if (!admin) {
+      res.status(401).json({ error: "Invalid email or password" });
+      return;
+    }
+    res.json({ ...admin, token: signSuperadminToken(admin.email) });
+  });
+
+  router.get(paths("/public/events/:code"), async (req, res) => {
+    const event = await repository.getSerializedEventByCode(req.params.code);
+    if (!event) {
+      res.status(404).json({ error: "Event not found" });
+      return;
+    }
+    res.json(event);
+  });
+
   router.get(paths("/events"), async (req, res) => {
-    res.json(await repository.getEvents());
+    const auth = requireTenantAuth(req, res);
+    if (!auth) return;
+    res.json(await repository.getEventsByOrganization(auth.orgId));
   });
 
   router.post(paths("/events"), async (req, res) => {
-    const event = await repository.createEvent(req.body);
+    const auth = requireTenantAuth(req, res);
+    if (!auth) return;
+    const event = await repository.createEvent({ ...req.body, organizationId: auth.orgId });
     emitEvent(event);
     res.status(201).json(event);
   });
@@ -64,6 +134,17 @@ export function createApiRouter({ repository, emitEvent }) {
   });
 
   router.get(paths("/admin/organizations/:organizationId"), async (req, res) => {
+    const token = getBearerToken(req);
+    const superadminAuth = verifySuperadminToken(token);
+    const tenantAuth = verifyTenantToken(token);
+    if (!superadminAuth && !tenantAuth) {
+      res.status(401).json({ error: "Authentication required" });
+      return;
+    }
+    if (!superadminAuth && tenantAuth.orgId !== req.params.organizationId) {
+      res.status(403).json({ error: "Access denied" });
+      return;
+    }
     const account = await repository.getOrganizationAdmin(req.params.organizationId);
     if (!account) {
       res.status(404).json({ error: "Organization not found" });
@@ -73,12 +154,21 @@ export function createApiRouter({ repository, emitEvent }) {
   });
 
   router.get(paths("/superadmin/overview"), async (req, res) => {
+    const auth = requireSuperadminAuth(req, res);
+    if (!auth) return;
     res.json(await repository.getPlatformOverview());
   });
 
   router.get(paths("/events/:code"), async (req, res) => {
+    const auth = requireTenantAuth(req, res);
+    if (!auth) return;
     const event = await requireEvent(req, res);
-    if (event) res.json(serializeEvent(event));
+    if (!event) return;
+    if (event.organizationId && event.organizationId !== auth.orgId && auth.role !== "superadmin") {
+      res.status(403).json({ error: "Access denied" });
+      return;
+    }
+    res.json(serializeEvent(event));
   });
 
   router.patch(paths("/events/:code/security"), async (req, res) => {

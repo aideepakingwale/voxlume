@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import { nanoid } from "nanoid";
 
 export const POLL_PRESETS = {
@@ -60,6 +61,11 @@ export const SAAS_PLANS = [
   },
 ];
 
+export const DEFAULT_SUPERADMIN_EMAIL = process.env.SUPERADMIN_EMAIL || "admin@voxlume.local";
+export const DEFAULT_SUPERADMIN_PASSWORD = process.env.SUPERADMIN_PASSWORD || "VoxLume123!";
+export const SUPERADMIN_AUTH_SECRET = process.env.SUPERADMIN_AUTH_SECRET || "voxlume-superadmin-secret";
+export const TENANT_AUTH_SECRET = process.env.TENANT_AUTH_SECRET || "voxlume-tenant-secret";
+
 export function normalizePlanKey(planKey) {
   return SAAS_PLANS.some((plan) => plan.key === planKey) ? planKey : "starter";
 }
@@ -70,6 +76,75 @@ export function getPlan(planKey) {
 
 export function now() {
   return new Date().toISOString();
+}
+
+export function normalizeEmail(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+export function hashSuperadminPassword(email, password) {
+  return crypto.createHash("sha256").update(`${normalizeEmail(email)}:${String(password || "")}`).digest("hex");
+}
+
+export function signSuperadminToken(email) {
+  const payload = {
+    email: normalizeEmail(email),
+    exp: Date.now() + 1000 * 60 * 60 * 12,
+  };
+  const encoded = Buffer.from(JSON.stringify(payload)).toString("base64url");
+  const signature = crypto.createHmac("sha256", SUPERADMIN_AUTH_SECRET).update(encoded).digest("base64url");
+  return `${encoded}.${signature}`;
+}
+
+export function verifySuperadminToken(token) {
+  if (!token) return null;
+  const [encoded, signature] = String(token).split(".");
+  if (!encoded || !signature) return null;
+  const expected = crypto.createHmac("sha256", SUPERADMIN_AUTH_SECRET).update(encoded).digest("base64url");
+  if (expected !== signature) return null;
+  try {
+    const payload = JSON.parse(Buffer.from(encoded, "base64url").toString("utf8"));
+    if (!payload.email || !payload.exp || Date.now() > payload.exp) return null;
+    return payload;
+  } catch {
+    return null;
+  }
+}
+
+export function signTenantToken(payload) {
+  const data = {
+    orgId: payload.orgId,
+    userId: payload.userId,
+    email: normalizeEmail(payload.email),
+    role: payload.role || "admin",
+    exp: Date.now() + 1000 * 60 * 60 * 12,
+  };
+  const encoded = Buffer.from(JSON.stringify(data)).toString("base64url");
+  const signature = crypto.createHmac("sha256", TENANT_AUTH_SECRET).update(encoded).digest("base64url");
+  return `${encoded}.${signature}`;
+}
+
+export function verifyTenantToken(token) {
+  if (!token) return null;
+  const [encoded, signature] = String(token).split(".");
+  if (!encoded || !signature) return null;
+  const expected = crypto.createHmac("sha256", TENANT_AUTH_SECRET).update(encoded).digest("base64url");
+  if (expected !== signature) return null;
+  try {
+    const payload = JSON.parse(Buffer.from(encoded, "base64url").toString("utf8"));
+    if (!payload.orgId || !payload.userId || !payload.email || !payload.exp || Date.now() > payload.exp) return null;
+    return payload;
+  } catch {
+    return null;
+  }
+}
+
+export function getDefaultSuperadmin() {
+  return {
+    name: "Platform Admin",
+    email: DEFAULT_SUPERADMIN_EMAIL,
+    passwordHash: hashSuperadminPassword(DEFAULT_SUPERADMIN_EMAIL, DEFAULT_SUPERADMIN_PASSWORD),
+  };
 }
 
 export function makeId() {

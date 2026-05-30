@@ -3,11 +3,14 @@ import {
   defaultIntegrations,
   defaultQuizQuestions,
   defaultSecurity,
+  DEFAULT_SUPERADMIN_EMAIL,
+  DEFAULT_SUPERADMIN_PASSWORD,
   getPlan,
   makeCode,
   makeId,
   normalizeOptions,
   normalizePlanKey,
+  hashSuperadminPassword,
   normalizePollType,
   now,
   SAAS_PLANS,
@@ -209,6 +212,16 @@ export class PostgresEventRepository {
         updated_at TIMESTAMPTZ NOT NULL
       );
 
+      CREATE TABLE IF NOT EXISTS platform_admins (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        email TEXT NOT NULL UNIQUE,
+        password_hash TEXT NOT NULL,
+        role TEXT NOT NULL DEFAULT 'superadmin',
+        created_at TIMESTAMPTZ NOT NULL,
+        updated_at TIMESTAMPTZ NOT NULL
+      );
+
       ALTER TABLE events ADD COLUMN IF NOT EXISTS organization_id TEXT;
 
       CREATE INDEX IF NOT EXISTS idx_events_code ON events(code);
@@ -223,30 +236,63 @@ export class PostgresEventRepository {
   }
 
   async seedIfEmpty() {
+    await this.seedPlatformAdminIfEmpty();
     const { rows } = await this.query("SELECT COUNT(*)::int AS count FROM events");
+    if (rows[0].count === 0) {
+      const event = await this.createEvent({
+        title: "Global Product Town Hall",
+        stage: "Live meeting",
+        audience: "Hybrid audience",
+      });
+      const stored = await this.getEventByCode(event.code);
+      const firstPoll = stored.polls.find((poll) => poll.type === "multiple_choice") || stored.polls[0];
+      await this.activatePoll(event.code, firstPoll.id);
+      await this.addPollResponse(event.code, firstPoll.id, {
+        participantId: "seed-a",
+        name: "Sam",
+        value: "Roadmap",
+      });
+      await this.addPollResponse(event.code, firstPoll.id, {
+        participantId: "seed-b",
+        name: "Priya",
+        value: "Security",
+      });
+      await this.addPollResponse(event.code, firstPoll.id, {
+        participantId: "seed-c",
+        name: "Lee",
+        value: "Roadmap",
+      });
+    }
+    await this.ensureDemoEvent();
+  }
+
+  async seedPlatformAdminIfEmpty() {
+    const { rows } = await this.query("SELECT COUNT(*)::int AS count FROM platform_admins");
     if (rows[0].count > 0) return;
-    const event = await this.createEvent({
-      title: "Global Product Town Hall",
-      stage: "Live meeting",
-      audience: "Hybrid audience",
-    });
-    const stored = await this.getEventByCode(event.code);
-    const firstPoll = stored.polls.find((poll) => poll.type === "multiple_choice") || stored.polls[0];
-    await this.activatePoll(event.code, firstPoll.id);
-    await this.addPollResponse(event.code, firstPoll.id, {
-      participantId: "seed-a",
-      name: "Sam",
-      value: "Roadmap",
-    });
-    await this.addPollResponse(event.code, firstPoll.id, {
-      participantId: "seed-b",
-      name: "Priya",
-      value: "Security",
-    });
-    await this.addPollResponse(event.code, firstPoll.id, {
-      participantId: "seed-c",
-      name: "Lee",
-      value: "Roadmap",
+    const createdAt = now();
+    await this.query(
+      `INSERT INTO platform_admins (id, name, email, password_hash, role, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [
+        makeId(),
+        "Platform Admin",
+        DEFAULT_SUPERADMIN_EMAIL,
+        hashSuperadminPassword(DEFAULT_SUPERADMIN_EMAIL, DEFAULT_SUPERADMIN_PASSWORD),
+        "superadmin",
+        createdAt,
+        createdAt,
+      ],
+    );
+  }
+
+  async ensureDemoEvent() {
+    const existing = await this.query("SELECT code FROM events WHERE code = $1", ["DEMO01"]);
+    if (existing.rows.length) return;
+    await this.createEvent({
+      code: "DEMO01",
+      title: "Public product demo",
+      stage: "Open demo",
+      audience: "Guest participants",
     });
   }
 
@@ -260,6 +306,56 @@ export class PostgresEventRepository {
       organizationId,
     ]);
     return Promise.all(rows.map((row) => this.getSerializedEventByCode(row.code)));
+  }
+
+  async getTenantAdminByEmail(email) {
+    const result = await this.query(
+      `
+        SELECT u.*, o.name AS organization_name, o.slug AS organization_slug, o.plan_key, o.status AS organization_status
+        FROM users u
+        JOIN organizations o ON o.id = u.organization_id
+        WHERE lower(u.email) = lower($1)
+      `,
+      [String(email || "").trim()],
+    );
+    return result.rows[0] || null;
+  }
+
+  async authenticateTenantAdmin(email, password) {
+    const admin = await this.getTenantAdminByEmail(email);
+    if (!admin) return null;
+    const candidateHashes = new Set([hashSuperadminPassword(email, password), Buffer.from(String(password || "")).toString("base64")]);
+    if (!candidateHashes.has(admin.password_hash)) return null;
+    return {
+      id: admin.id,
+      name: admin.name,
+      email: admin.email,
+      role: admin.role,
+      organization: {
+        id: admin.organization_id,
+        name: admin.organization_name,
+        slug: admin.organization_slug,
+        planKey: admin.plan_key,
+        status: admin.organization_status,
+      },
+    };
+  }
+
+  async getPlatformAdminByEmail(email) {
+    const result = await this.query("SELECT * FROM platform_admins WHERE lower(email) = lower($1)", [String(email || "").trim()]);
+    return result.rows[0] || null;
+  }
+
+  async authenticatePlatformAdmin(email, password) {
+    const admin = await this.getPlatformAdminByEmail(email);
+    if (!admin) return null;
+    if (admin.password_hash !== hashSuperadminPassword(email, password)) return null;
+    return {
+      id: admin.id,
+      name: admin.name,
+      email: admin.email,
+      role: admin.role,
+    };
   }
 
   async getEventByCode(code) {
@@ -385,7 +481,7 @@ export class PostgresEventRepository {
   }
 
   async createEvent(payload = {}) {
-    let code = makeCode();
+    let code = String(payload.code || "").trim().toUpperCase() || makeCode();
     while (await this.getEventByCode(code)) code = makeCode();
 
     const createdAt = now();

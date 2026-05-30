@@ -56,6 +56,44 @@ const pollTypeIcons = {
 };
 
 const accountStorageKey = `${APP_CONFIG.storagePrefix}-account`;
+const superadminStorageKey = `${APP_CONFIG.storagePrefix}-superadmin`;
+
+function readJsonStorage(key) {
+  try {
+    return JSON.parse(localStorage.getItem(key) || "null");
+  } catch {
+    return null;
+  }
+}
+
+function writeJsonStorage(key, value) {
+  localStorage.setItem(key, JSON.stringify(value));
+}
+
+function getTenantAuth() {
+  return readJsonStorage(accountStorageKey);
+}
+
+function getSuperadminAuth() {
+  return readJsonStorage(superadminStorageKey);
+}
+
+if (!window.__voxlumeFetchWrapped) {
+  const rawFetch = window.fetch.bind(window);
+  window.fetch = async (input, init = {}) => {
+    const target = typeof input === "string" ? input : input?.url || "";
+    const headers = new Headers(init.headers || (typeof input !== "string" ? input.headers : undefined));
+    if (target.includes("/api/superadmin/")) {
+      const auth = getSuperadminAuth();
+      if (auth?.token) headers.set("Authorization", `Bearer ${auth.token}`);
+    } else if (target.includes("/api/events") || target.includes("/api/admin")) {
+      const auth = getTenantAuth() || getSuperadminAuth();
+      if (auth?.token) headers.set("Authorization", `Bearer ${auth.token}`);
+    }
+    window.__voxlumeFetchWrapped = true;
+    return rawFetch(input, { ...init, headers });
+  };
+}
 
 async function api(path, options = {}) {
   const response = await fetch(`${API_BASE}${path}`, {
@@ -84,13 +122,14 @@ function parseRoute() {
   return { view: "landing" };
 }
 
-function useLiveEvent(code) {
+function useLiveEvent(code, options = {}) {
   const [event, setEvent] = useState(null);
-  const [loading, setLoading] = useState(Boolean(code));
+  const [loading, setLoading] = useState(Boolean(code) && !options.paused);
   const [error, setError] = useState("");
+  const eventPath = options.publicAccess ? `/api/public/events/${code}` : `/api/events/${code}`;
 
   useEffect(() => {
-    if (!code) {
+    if (!code || options.paused) {
       setEvent(null);
       setLoading(false);
       return undefined;
@@ -99,7 +138,7 @@ function useLiveEvent(code) {
     let active = true;
     setLoading(true);
     setError("");
-    api(`/api/events/${code}`)
+    api(eventPath)
       .then((payload) => {
         if (active) setEvent(payload);
       })
@@ -123,7 +162,7 @@ function useLiveEvent(code) {
       active = false;
       socket.disconnect();
     };
-  }, [code]);
+  }, [code, eventPath, options.paused]);
 
   return { event, loading, error };
 }
@@ -191,8 +230,7 @@ function LandingPage({ onNavigate }) {
   }, []);
 
   async function openDemoHost() {
-    const events = await api("/api/events");
-    onNavigate({ view: "host", code: events[0]?.code || "" });
+    onNavigate({ view: "participant", code: "DEMO01" });
   }
 
   const features = [
@@ -336,7 +374,7 @@ function RegistrationPage({ initialPlanKey, onNavigate }) {
         method: "POST",
         body: JSON.stringify({ ...form, planKey }),
       });
-      localStorage.setItem(accountStorageKey, JSON.stringify(account));
+      writeJsonStorage(accountStorageKey, account);
       onNavigate({ view: "admin", organizationId: account.organization.id });
     } catch (err) {
       setError(err.message);
@@ -387,10 +425,35 @@ function RegistrationPage({ initialPlanKey, onNavigate }) {
 }
 
 function SaaSAdminPanel({ organizationId, onNavigate }) {
+  const [auth, setAuth] = useState(getTenantAuth());
   const [account, setAccount] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [authForm, setAuthForm] = useState({ email: "", password: "" });
   const [eventTitle, setEventTitle] = useState("");
+
+  async function signIn(event) {
+    event.preventDefault();
+    setError("");
+    try {
+      const authResponse = await api("/api/login", {
+        method: "POST",
+        body: JSON.stringify(authForm),
+      });
+      writeJsonStorage(accountStorageKey, authResponse);
+      setAuth(authResponse);
+      setLoading(true);
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  function signOut() {
+    localStorage.removeItem(accountStorageKey);
+    setAuth(null);
+    setAccount(null);
+    setLoading(false);
+  }
 
   const resolvedOrganizationId =
     organizationId ||
@@ -403,15 +466,21 @@ function SaaSAdminPanel({ organizationId, onNavigate }) {
     })();
 
   useEffect(() => {
-    if (!resolvedOrganizationId) {
+    if (!auth?.token || !resolvedOrganizationId) {
       setLoading(false);
       return;
     }
     api(`/api/admin/organizations/${resolvedOrganizationId}`)
       .then(setAccount)
-      .catch((err) => setError(err.message))
+      .catch((err) => {
+        setError(err.message);
+        if (String(err.message || "").toLowerCase().includes("unauthorized")) {
+          localStorage.removeItem(accountStorageKey);
+          setAuth(null);
+        }
+      })
       .finally(() => setLoading(false));
-  }, [resolvedOrganizationId]);
+  }, [auth?.token, resolvedOrganizationId]);
 
   async function createWorkspaceEvent() {
     const event = await api("/api/events", {
@@ -427,6 +496,40 @@ function SaaSAdminPanel({ organizationId, onNavigate }) {
   }
 
   if (loading) return <StateMessage title="Loading admin workspace" />;
+  if (!auth?.token) {
+    return (
+      <div className="auth-shell">
+        <button className="brand brand-button" onClick={() => onNavigate({ view: "landing" })}>
+          <div className="brand-mark">{APP_CONFIG.brandInitials}</div>
+          <strong>{APP_CONFIG.productName}</strong>
+        </button>
+        <section className="auth-grid single">
+          <form className="registration-card" onSubmit={signIn}>
+            <p className="section-label">Workspace admin</p>
+            <h2>Sign in to continue</h2>
+            <label>
+              Email
+              <input value={authForm.email} onChange={(event) => setAuthForm((value) => ({ ...value, email: event.target.value }))} placeholder="admin@company.com" required />
+            </label>
+            <label>
+              Password
+              <input type="password" value={authForm.password} onChange={(event) => setAuthForm((value) => ({ ...value, password: event.target.value }))} placeholder="Workspace password" required />
+            </label>
+            {error && <div className="form-error">{error}</div>}
+            <button className="primary-button" type="submit">
+              <LockKeyhole size={16} />
+              Sign in
+            </button>
+            <button className="secondary-button" type="button" onClick={() => onNavigate({ view: "register", planKey: "starter" })}>
+              <UserPlus size={16} />
+              Create workspace
+            </button>
+          </form>
+        </section>
+      </div>
+    );
+  }
+
   if (!resolvedOrganizationId || error) {
     return (
       <div className="admin-shell">
@@ -496,12 +599,69 @@ function SaaSAdminPanel({ organizationId, onNavigate }) {
 }
 
 function SuperAdminPanel({ onNavigate }) {
+  const [auth, setAuth] = useState(getSuperadminAuth());
   const [overview, setOverview] = useState(null);
   const [error, setError] = useState("");
+  const [login, setLogin] = useState({ email: "", password: "" });
+  const [loginError, setLoginError] = useState("");
+
+  async function signIn(event) {
+    event.preventDefault();
+    setLoginError("");
+    try {
+      const account = await api("/api/superadmin/login", {
+        method: "POST",
+        body: JSON.stringify(login),
+      });
+      writeJsonStorage(superadminStorageKey, account);
+      setAuth(account);
+      setError("");
+      setOverview(null);
+    } catch (err) {
+      setLoginError(err.message);
+    }
+  }
+
+  function signOut() {
+    localStorage.removeItem(superadminStorageKey);
+    setAuth(null);
+    setOverview(null);
+    setError("");
+  }
 
   useEffect(() => {
     api("/api/superadmin/overview").then(setOverview).catch((err) => setError(err.message));
   }, []);
+
+  if (!auth?.token) {
+    return (
+      <div className="auth-shell">
+        <button className="brand brand-button" onClick={() => onNavigate({ view: "landing" })}>
+          <div className="brand-mark">{APP_CONFIG.brandInitials}</div>
+          <strong>{APP_CONFIG.productName}</strong>
+        </button>
+        <section className="auth-grid single">
+          <form className="registration-card" onSubmit={signIn}>
+            <p className="section-label">Superadmin</p>
+            <h2>Platform sign in</h2>
+            <label>
+              Email
+              <input value={login.email} onChange={(event) => setLogin((value) => ({ ...value, email: event.target.value }))} placeholder="admin@voxlume.local" required />
+            </label>
+            <label>
+              Password
+              <input type="password" value={login.password} onChange={(event) => setLogin((value) => ({ ...value, password: event.target.value }))} placeholder="Platform password" required />
+            </label>
+            {loginError && <div className="form-error">{loginError}</div>}
+            <button className="primary-button" type="submit">
+              <LockKeyhole size={16} />
+              Sign in
+            </button>
+          </form>
+        </section>
+      </div>
+    );
+  }
 
   if (error) return <StateMessage title={error} tone="danger" />;
   if (!overview) return <StateMessage title="Loading platform overview" />;
@@ -570,6 +730,9 @@ function AdminHeader({ title, eyebrow, onNavigate }) {
 }
 
 function HostConsole({ routeCode, onJoin }) {
+  const [account, setAccount] = useState(getTenantAuth());
+  const [login, setLogin] = useState({ email: "", password: "" });
+  const [loginError, setLoginError] = useState("");
   const [events, setEvents] = useState([]);
   const [selectedCode, setSelectedCode] = useState(routeCode);
   const [tab, setTab] = useState("qna");
@@ -578,14 +741,41 @@ function HostConsole({ routeCode, onJoin }) {
     audience: "",
     stage: "",
   });
-  const { event, loading, error } = useLiveEvent(selectedCode);
+  const { event, loading, error } = useLiveEvent(selectedCode, { paused: !account?.token });
+
+  async function signIn(event) {
+    event.preventDefault();
+    setLoginError("");
+    try {
+      const auth = await api("/api/login", {
+        method: "POST",
+        body: JSON.stringify(login),
+      });
+      writeJsonStorage(accountStorageKey, auth);
+      setAccount(auth);
+      setLogin({ email: "", password: "" });
+      setEvents([]);
+      setSelectedCode("");
+    } catch (err) {
+      setLoginError(err.message);
+    }
+  }
 
   useEffect(() => {
-    api("/api/events").then((payload) => {
-      setEvents(payload);
-      if (!selectedCode && payload[0]) setSelectedCode(payload[0].code);
-    });
-  }, []);
+    if (!account?.token) return;
+    api("/api/events")
+      .then((payload) => {
+        setEvents(payload);
+        if (!selectedCode && payload[0]) setSelectedCode(payload[0].code);
+      })
+      .catch((err) => {
+        setLoginError(err.message);
+        if (String(err.message || "").toLowerCase().includes("unauthorized")) {
+          localStorage.removeItem(accountStorageKey);
+          setAccount(null);
+        }
+      });
+  }, [account?.token, selectedCode]);
 
   useEffect(() => {
     if (routeCode) setSelectedCode(routeCode);
@@ -607,6 +797,44 @@ function HostConsole({ routeCode, onJoin }) {
     setNewEvent({ title: "", audience: "", stage: "" });
     setSelectedCode(created.code);
     window.history.pushState({}, "", `/host/${created.code}`);
+  }
+
+  if (!account?.token) {
+    return (
+      <div className="auth-shell">
+        <button className="brand brand-button" onClick={() => window.location.assign("/")}>
+          <div className="brand-mark">{APP_CONFIG.brandInitials}</div>
+          <strong>{APP_CONFIG.productName}</strong>
+        </button>
+        <section className="auth-grid single">
+          <form className="registration-card" onSubmit={signIn}>
+            <p className="section-label">Host access</p>
+            <h2>Sign in to manage events</h2>
+            <label>
+              Email
+              <input value={login.email} onChange={(event) => setLogin((value) => ({ ...value, email: event.target.value }))} placeholder="admin@company.com" required />
+            </label>
+            <label>
+              Password
+              <input type="password" value={login.password} onChange={(event) => setLogin((value) => ({ ...value, password: event.target.value }))} placeholder="Workspace password" required />
+            </label>
+            {loginError && <div className="form-error">{loginError}</div>}
+            <button className="primary-button" type="submit">
+              <LockKeyhole size={16} />
+              Sign in
+            </button>
+            <button className="secondary-button" type="button" onClick={() => window.location.assign("/join/DEMO01")}>
+              <Presentation size={16} />
+              Join as participant
+            </button>
+            <button className="secondary-button" type="button" onClick={() => window.location.assign("/register/starter")}>
+              <UserPlus size={16} />
+              Register workspace
+            </button>
+          </form>
+        </section>
+      </div>
+    );
   }
 
   const tabs = [
