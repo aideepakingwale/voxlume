@@ -167,6 +167,11 @@ export function createApiRouter({ repository, emitEvent }) {
         res.status(400).json({ error: "Name, email, and company are required" });
         return;
       }
+      const existingUser = await repository.findUserByEmail(payload.email);
+      if (existingUser) {
+        res.status(409).json({ error: "That email is already registered" });
+        return;
+      }
       const account = await repository.createOrganizationWithAdmin(payload);
       const { token: verificationToken, expiresAt } = await repository.createEmailVerificationToken(account.user.id);
       const verificationLink = `${new URL(req.originalUrl, `${req.protocol}://${req.get("host")}`).origin}/verify/${encodeURIComponent(verificationToken)}`;
@@ -184,7 +189,7 @@ export function createApiRouter({ repository, emitEvent }) {
         },
       });
     } catch (error) {
-      const isDuplicate = String(error.message || "").includes("UNIQUE");
+      const isDuplicate = error?.code === "EMAIL_EXISTS" || String(error.message || "").includes("UNIQUE");
       res.status(isDuplicate ? 409 : 500).json({ error: isDuplicate ? "That email is already registered" : error.message });
     }
   });
@@ -240,7 +245,15 @@ export function createApiRouter({ repository, emitEvent }) {
   router.post(paths("/superadmin/organizations/:organizationId/users"), async (req, res) => {
     const auth = requireSuperadminAuth(req, res);
     if (!auth) return;
-    const updated = await repository.createOrganizationUser(req.params.organizationId, req.body || {});
+    const payload = req.body || {};
+    if (payload.email) {
+      const existingUser = await repository.findUserByEmail(payload.email);
+      if (existingUser) {
+        res.status(409).json({ error: "That email is already registered" });
+        return;
+      }
+    }
+    const updated = await repository.createOrganizationUser(req.params.organizationId, payload);
     if (!updated) {
       res.status(404).json({ error: "Organization not found" });
       return;

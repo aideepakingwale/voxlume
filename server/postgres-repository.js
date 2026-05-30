@@ -964,6 +964,13 @@ export class PostgresEventRepository {
     return this.getSerializedEventByCode(code);
   }
 
+  async findUserByEmail(email) {
+    const normalizedEmail = String(email || "").trim().toLowerCase();
+    if (!normalizedEmail) return null;
+    const result = await this.query("SELECT id, email FROM users WHERE email = $1", [normalizedEmail]);
+    return result.rows[0] || null;
+  }
+
   async getPlans() {
     return this.getPlansWithOverrides();
   }
@@ -1054,6 +1061,12 @@ export class PostgresEventRepository {
   async createOrganizationUser(organizationId, input = {}) {
     const organizationResult = await this.query("SELECT id FROM organizations WHERE id = $1", [organizationId]);
     if (!organizationResult.rows[0]) return null;
+    const email = String(input.email || "").trim().toLowerCase();
+    if (email && (await this.findUserByEmail(email))) {
+      const error = new Error("That email is already registered");
+      error.code = "EMAIL_EXISTS";
+      throw error;
+    }
     const createdAt = now();
     await this.query(
       `INSERT INTO users (
@@ -1063,7 +1076,7 @@ export class PostgresEventRepository {
         makeId(),
         organizationId,
         String(input.name || "Team member").trim(),
-        String(input.email || "").trim().toLowerCase(),
+        email,
         String(input.role || "admin").trim(),
         hashPassword(input.password || "VoxLume123!"),
         input.verifiedAt === false ? null : createdAt,
@@ -1111,6 +1124,12 @@ export class PostgresEventRepository {
     const organizationId = makeId();
     const userId = makeId();
     const planKey = normalizePlanKey(input.planKey);
+    const email = String(input.email || "").trim().toLowerCase();
+    if (email && (await this.findUserByEmail(email))) {
+      const error = new Error("That email is already registered");
+      error.code = "EMAIL_EXISTS";
+      throw error;
+    }
     let slug = slugify(input.company || input.name || "workspace");
     let suffix = 1;
     while ((await this.query("SELECT 1 FROM organizations WHERE slug = $1", [slug])).rows[0]) {
@@ -1142,7 +1161,7 @@ export class PostgresEventRepository {
           userId,
           organizationId,
           String(input.name || "Workspace admin").trim(),
-          String(input.email || "").trim().toLowerCase(),
+          email,
           "admin",
           hashPassword(input.password),
           createdAt,
