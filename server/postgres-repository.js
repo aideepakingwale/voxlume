@@ -5,12 +5,15 @@ import {
   defaultSecurity,
   DEFAULT_SUPERADMIN_EMAIL,
   DEFAULT_SUPERADMIN_PASSWORD,
+  EMAIL_VERIFICATION_TTL_MS,
   getPlan,
   makeCode,
   makeId,
+  makeVerificationToken,
   normalizeOptions,
   normalizePlanKey,
   hashSuperadminPassword,
+  hashVerificationToken,
   normalizePollType,
   now,
   SAAS_PLANS,
@@ -208,8 +211,18 @@ export class PostgresEventRepository {
         email TEXT NOT NULL UNIQUE,
         role TEXT NOT NULL DEFAULT 'admin',
         password_hash TEXT,
+        verified_at TIMESTAMPTZ,
         created_at TIMESTAMPTZ NOT NULL,
         updated_at TIMESTAMPTZ NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS email_verification_tokens (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        token_hash TEXT NOT NULL UNIQUE,
+        expires_at TIMESTAMPTZ NOT NULL,
+        consumed_at TIMESTAMPTZ,
+        created_at TIMESTAMPTZ NOT NULL
       );
 
       CREATE TABLE IF NOT EXISTS platform_admins (
@@ -223,10 +236,12 @@ export class PostgresEventRepository {
       );
 
       ALTER TABLE events ADD COLUMN IF NOT EXISTS organization_id TEXT;
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS verified_at TIMESTAMPTZ;
 
       CREATE INDEX IF NOT EXISTS idx_events_code ON events(code);
       CREATE INDEX IF NOT EXISTS idx_events_organization ON events(organization_id);
       CREATE INDEX IF NOT EXISTS idx_users_organization ON users(organization_id);
+      CREATE INDEX IF NOT EXISTS idx_email_verification_tokens_hash ON email_verification_tokens(token_hash);
       CREATE INDEX IF NOT EXISTS idx_questions_event ON questions(event_id, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_polls_event ON polls(event_id, status);
       CREATE INDEX IF NOT EXISTS idx_poll_responses_poll ON poll_responses(poll_id);
@@ -321,9 +336,54 @@ export class PostgresEventRepository {
     return result.rows[0] || null;
   }
 
+  async createEmailVerificationToken(userId) {
+    const token = makeVerificationToken();
+    const createdAt = now();
+    const expiresAt = new Date(Date.now() + EMAIL_VERIFICATION_TTL_MS).toISOString();
+    await this.query(
+      `INSERT INTO email_verification_tokens (id, user_id, token_hash, expires_at, consumed_at, created_at)
+       VALUES ($1, $2, $3, $4, NULL, $5)`,
+      [makeId(), userId, hashVerificationToken(token), expiresAt, createdAt],
+    );
+    return { token, expiresAt };
+  }
+
+  async verifyEmailToken(token) {
+    const tokenHash = hashVerificationToken(token);
+    const { rows } = await this.query("SELECT * FROM email_verification_tokens WHERE token_hash = $1", [tokenHash]);
+    const tokenRow = rows[0];
+    if (!tokenRow || tokenRow.consumed_at) return null;
+    if (new Date(tokenRow.expires_at).getTime() < Date.now()) return null;
+    const verifiedAt = now();
+    await this.transaction(async (client) => {
+      await client.query("UPDATE users SET verified_at = $1, updated_at = $1 WHERE id = $2", [verifiedAt, tokenRow.user_id]);
+      await client.query("UPDATE email_verification_tokens SET consumed_at = $1 WHERE id = $2", [verifiedAt, tokenRow.id]);
+    });
+    const user = await this.query("SELECT * FROM users WHERE id = $1", [tokenRow.user_id]);
+    return user.rows[0] || null;
+  }
+
+  async getTenantAdminByEmail(email) {
+    const result = await this.query(
+      `
+        SELECT u.*, o.name AS organization_name, o.slug AS organization_slug, o.plan_key, o.status AS organization_status
+        FROM users u
+        JOIN organizations o ON o.id = u.organization_id
+        WHERE lower(u.email) = lower($1)
+      `,
+      [String(email || "").trim()],
+    );
+    return result.rows[0] || null;
+  }
+
   async authenticateTenantAdmin(email, password) {
     const admin = await this.getTenantAdminByEmail(email);
     if (!admin) return null;
+    if (!admin.verified_at) {
+      const error = new Error("Email verification required");
+      error.statusCode = 403;
+      throw error;
+    }
     const candidateHashes = new Set([hashSuperadminPassword(email, password), Buffer.from(String(password || "")).toString("base64")]);
     if (!candidateHashes.has(admin.password_hash)) return null;
     return {
@@ -331,6 +391,7 @@ export class PostgresEventRepository {
       name: admin.name,
       email: admin.email,
       role: admin.role,
+      verifiedAt: admin.verified_at,
       organization: {
         id: admin.organization_id,
         name: admin.organization_name,

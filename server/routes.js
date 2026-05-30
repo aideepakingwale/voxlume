@@ -29,6 +29,30 @@ export function createApiRouter({ repository, emitEvent }) {
     return payload;
   }
 
+  async function sendVerificationEmail({ to, name, link }) {
+    const resendKey = process.env.RESEND_API_KEY || "";
+    const from = process.env.RESEND_FROM_EMAIL || `VoxLume <no-reply@${String(process.env.EMAIL_DOMAIN || "voxlume.local").replace(/^https?:\/\//, "")}>`;
+    if (!resendKey) return false;
+    const response = await fetch("https://api.resend.com/emails", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${resendKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        from,
+        to,
+        subject: "Verify your VoxLume workspace",
+        html: `<p>Hello ${name || "there"},</p><p>Please verify your workspace by opening this link:</p><p><a href="${link}">${link}</a></p><p>This link expires soon.</p>`,
+      }),
+    });
+    if (!response.ok) {
+      const text = await response.text().catch(() => "");
+      throw new Error(text || "Failed to send verification email");
+    }
+    return true;
+  }
+
   async function requireEvent(req, res) {
     const event = await repository.getEventByCode(req.params.code);
     if (!event) {
@@ -63,18 +87,22 @@ export function createApiRouter({ repository, emitEvent }) {
       res.status(400).json({ error: "Email and password are required" });
       return;
     }
-    const user = await repository.authenticateTenantAdmin(payload.email, payload.password);
-    if (!user) {
-      res.status(401).json({ error: "Invalid email or password" });
-      return;
+    try {
+      const user = await repository.authenticateTenantAdmin(payload.email, payload.password);
+      if (!user) {
+        res.status(401).json({ error: "Invalid email or password" });
+        return;
+      }
+      const token = signTenantToken({
+        orgId: user.organization.id,
+        userId: user.id,
+        email: user.email,
+        role: user.role,
+      });
+      res.json({ ...user, token });
+    } catch (error) {
+      res.status(error.statusCode || 500).json({ error: error.message || "Login failed" });
     }
-    const token = signTenantToken({
-      orgId: user.organization.id,
-      userId: user.id,
-      email: user.email,
-      role: user.role,
-    });
-    res.json({ ...user, token });
   });
 
   router.post(paths("/superadmin/login"), async (req, res) => {
@@ -89,6 +117,20 @@ export function createApiRouter({ repository, emitEvent }) {
       return;
     }
     res.json({ ...admin, token: signSuperadminToken(admin.email) });
+  });
+
+  router.get(paths("/verify-email/:token"), async (req, res) => {
+    const verified = await repository.verifyEmailToken(req.params.token);
+    if (!verified) {
+      res.status(400).json({ error: "Verification link is invalid or expired" });
+      return;
+    }
+    res.json({
+      ok: true,
+      email: verified.email,
+      organizationId: verified.organization_id,
+      verifiedAt: verified.verified_at || new Date().toISOString(),
+    });
   });
 
   router.get(paths("/public/events/:code"), async (req, res) => {
@@ -126,7 +168,21 @@ export function createApiRouter({ repository, emitEvent }) {
         return;
       }
       const account = await repository.createOrganizationWithAdmin(payload);
-      res.status(201).json(account);
+      const { token: verificationToken, expiresAt } = await repository.createEmailVerificationToken(account.user.id);
+      const verificationLink = `${new URL(req.originalUrl, `${req.protocol}://${req.get("host")}`).origin}/verify/${encodeURIComponent(verificationToken)}`;
+      const sent = await sendVerificationEmail({
+        to: account.user.email,
+        name: account.user.name,
+        link: verificationLink,
+      }).catch(() => false);
+      res.status(201).json({
+        ...account,
+        verification: {
+          sent,
+          link: verificationLink,
+          expiresAt,
+        },
+      });
     } catch (error) {
       const isDuplicate = String(error.message || "").includes("UNIQUE");
       res.status(isDuplicate ? 409 : 500).json({ error: isDuplicate ? "That email is already registered" : error.message });

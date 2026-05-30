@@ -116,6 +116,7 @@ function parseRoute() {
   if (route === "join") return { view: "participant", code: code?.toUpperCase() || "" };
   if (route === "host") return { view: "host", code: code?.toUpperCase() || "" };
   if (route === "register") return { view: "register", planKey: code || "starter" };
+  if (route === "verify") return { view: "verify", token: code || extra || "" };
   if (route === "admin") return { view: "admin", organizationId: code || "" };
   if (route === "superadmin") return { view: "superadmin" };
   if (route === "features") return { view: "landing", section: code || extra || "features" };
@@ -212,6 +213,9 @@ function App() {
   }
   if (route.view === "register") {
     return <RegistrationPage initialPlanKey={route.planKey} onNavigate={navigate} />;
+  }
+  if (route.view === "verify") {
+    return <VerificationPage token={route.token} onNavigate={navigate} />;
   }
   if (route.view === "admin") {
     return <SaaSAdminPanel organizationId={route.organizationId} onNavigate={navigate} />;
@@ -361,6 +365,7 @@ function RegistrationPage({ initialPlanKey, onNavigate }) {
   const [planKey, setPlanKey] = useState(initialPlanKey || "starter");
   const [form, setForm] = useState({ name: "", email: "", company: "", password: "" });
   const [error, setError] = useState("");
+  const [verification, setVerification] = useState(null);
 
   useEffect(() => {
     api("/api/plans").then(setPlans).catch((err) => setError(err.message));
@@ -375,7 +380,7 @@ function RegistrationPage({ initialPlanKey, onNavigate }) {
         body: JSON.stringify({ ...form, planKey }),
       });
       writeJsonStorage(accountStorageKey, account);
-      onNavigate({ view: "admin", organizationId: account.organization.id });
+      setVerification(account.verification || { link: "", sent: false, expiresAt: "" });
     } catch (err) {
       setError(err.message);
     }
@@ -394,31 +399,106 @@ function RegistrationPage({ initialPlanKey, onNavigate }) {
           <p className="hero-copy">Your SaaS admin workspace is created immediately with plan limits, users, and event operations.</p>
           <PlanGrid plans={plans} selectedPlanKey={planKey} onSelect={setPlanKey} />
         </div>
-        <form className="registration-card" onSubmit={submitRegistration}>
-          <p className="section-label">Workspace admin</p>
-          <h2>Account details</h2>
-          <label>
-            Full name
-            <input value={form.name} onChange={(event) => setForm((value) => ({ ...value, name: event.target.value }))} placeholder="Avery Stone" required />
-          </label>
-          <label>
-            Work email
-            <input type="email" value={form.email} onChange={(event) => setForm((value) => ({ ...value, email: event.target.value }))} placeholder="avery@company.com" required />
-          </label>
-          <label>
-            Company
-            <input value={form.company} onChange={(event) => setForm((value) => ({ ...value, company: event.target.value }))} placeholder="Northstar Events" required />
-          </label>
-          <label>
-            Password
-            <input type="password" value={form.password} onChange={(event) => setForm((value) => ({ ...value, password: event.target.value }))} placeholder="Create password" required />
-          </label>
-          {error && <div className="form-error">{error}</div>}
-          <button className="primary-button" type="submit">
-            <UserPlus size={16} />
-            Create workspace
-          </button>
-        </form>
+        {verification ? (
+          <div className="registration-card">
+            <p className="section-label">Verification sent</p>
+            <h2>Check your email to activate the workspace</h2>
+            <p className="hero-copy">
+              We sent a verification link to <strong>{form.email}</strong>. You need to verify the address before you can sign in.
+            </p>
+            <div className="verification-box">
+              <strong>Delivery status</strong>
+              <span>{verification.sent ? "Email sent through Resend" : "Email provider not configured"}</span>
+              <span>Expires {verification.expiresAt ? new Date(verification.expiresAt).toLocaleString() : "soon"}</span>
+            </div>
+            <div className="hero-actions">
+              <button className="primary-button" onClick={() => onNavigate({ view: "verify", token: verification.link.split("/").pop() || "" })}>
+                <Check size={16} />
+                Open verification link
+              </button>
+              <button className="secondary-button" onClick={() => onNavigate({ view: "landing" })}>
+                Back to landing
+              </button>
+            </div>
+            {verification.link && !verification.sent && (
+              <div className="copy-chip">
+                <code>{verification.link}</code>
+              </div>
+            )}
+          </div>
+        ) : (
+          <form className="registration-card" onSubmit={submitRegistration}>
+            <p className="section-label">Workspace admin</p>
+            <h2>Account details</h2>
+            <label>
+              Full name
+              <input value={form.name} onChange={(event) => setForm((value) => ({ ...value, name: event.target.value }))} placeholder="Avery Stone" required />
+            </label>
+            <label>
+              Work email
+              <input type="email" value={form.email} onChange={(event) => setForm((value) => ({ ...value, email: event.target.value }))} placeholder="avery@company.com" required />
+            </label>
+            <label>
+              Company
+              <input value={form.company} onChange={(event) => setForm((value) => ({ ...value, company: event.target.value }))} placeholder="Northstar Events" required />
+            </label>
+            <label>
+              Password
+              <input type="password" value={form.password} onChange={(event) => setForm((value) => ({ ...value, password: event.target.value }))} placeholder="Create password" required />
+            </label>
+            {error && <div className="form-error">{error}</div>}
+            <button className="primary-button" type="submit">
+              <UserPlus size={16} />
+              Create workspace
+            </button>
+          </form>
+        )}
+      </section>
+    </div>
+  );
+}
+
+function VerificationPage({ token, onNavigate }) {
+  const [status, setStatus] = useState("loading");
+  const [message, setMessage] = useState("Verifying your email address...");
+
+  useEffect(() => {
+    if (!token) {
+      setStatus("error");
+      setMessage("Verification link is missing.");
+      return;
+    }
+    api(`/api/verify-email/${encodeURIComponent(token)}`)
+      .then(() => {
+        setStatus("success");
+        setMessage("Your email has been verified. You can now sign in.");
+      })
+      .catch((err) => {
+        setStatus("error");
+        setMessage(err.message);
+      });
+  }, [token]);
+
+  return (
+    <div className="auth-shell">
+      <button className="brand brand-button" onClick={() => onNavigate({ view: "landing" })}>
+        <div className="brand-mark">{APP_CONFIG.brandInitials}</div>
+        <strong>{APP_CONFIG.productName}</strong>
+      </button>
+      <section className="auth-grid single">
+        <div className="registration-card">
+          <p className="section-label">Verification</p>
+          <h2>{status === "success" ? "Workspace activated" : "Verify your email"}</h2>
+          <p className="hero-copy">{message}</p>
+          <div className="hero-actions">
+            <button className="primary-button" onClick={() => onNavigate({ view: "host", code: "DEMO01" })}>
+              Go to login
+            </button>
+            <button className="secondary-button" onClick={() => onNavigate({ view: "landing" })}>
+              Landing
+            </button>
+          </div>
+        </div>
       </section>
     </div>
   );

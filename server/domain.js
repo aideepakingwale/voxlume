@@ -64,6 +64,7 @@ export const SAAS_PLANS = [
 export const DEFAULT_SUPERADMIN_EMAIL = process.env.SUPERADMIN_EMAIL || "admin@voxlume.local";
 export const DEFAULT_SUPERADMIN_PASSWORD = process.env.SUPERADMIN_PASSWORD || "VoxLume123!";
 export const SUPERADMIN_AUTH_SECRET = process.env.SUPERADMIN_AUTH_SECRET || "voxlume-superadmin-secret";
+export const EMAIL_VERIFICATION_TTL_MS = Number(process.env.EMAIL_VERIFICATION_TTL_MS || 1000 * 60 * 60 * 24);
 export const TENANT_AUTH_SECRET = process.env.TENANT_AUTH_SECRET || "voxlume-tenant-secret";
 
 export function normalizePlanKey(planKey) {
@@ -84,6 +85,14 @@ export function normalizeEmail(value) {
 
 export function hashSuperadminPassword(email, password) {
   return crypto.createHash("sha256").update(`${normalizeEmail(email)}:${String(password || "")}`).digest("hex");
+}
+
+export function makeVerificationToken() {
+  return crypto.randomBytes(24).toString("hex");
+}
+
+export function hashVerificationToken(token) {
+  return crypto.createHash("sha256").update(String(token || "")).digest("hex");
 }
 
 export function signSuperadminToken(email) {
