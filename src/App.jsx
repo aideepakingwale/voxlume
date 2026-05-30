@@ -340,7 +340,10 @@ function RegistrationPage({ initialPlanKey, onNavigate }) {
               <span>Expires {verification.expiresAt ? new Date(verification.expiresAt).toLocaleString() : "soon"}</span>
             </div>
             <div className="hero-actions">
-              <button className="primary-button" onClick={() => onNavigate({ view: "verify", token: verification.link.split("/").pop() || "" })}>
+              <button
+                className="primary-button"
+                onClick={() => onNavigate({ view: "verify", token: verification.link ? verification.link.split("/").pop() || "" : "" })}
+              >
                 <Check size={16} />
                 Open verification link
               </button>
@@ -472,6 +475,7 @@ function SaaSAdminPanel({ organizationId, onNavigate }) {
         return "";
       }
     })();
+  const activeOrganization = account?.organization || auth?.organization || null;
 
   useEffect(() => {
     if (!auth?.token || !resolvedOrganizationId) {
@@ -491,12 +495,16 @@ function SaaSAdminPanel({ organizationId, onNavigate }) {
   }, [auth?.token, resolvedOrganizationId]);
 
   async function createWorkspaceEvent() {
+    if (!activeOrganization?.id) {
+      setError("Organization is not loaded yet.");
+      return;
+    }
     const event = await api("/api/events", {
       method: "POST",
       body: JSON.stringify({
-        organizationId: account.organization.id,
-        title: eventTitle || `${account.organization.name} live session`,
-        audience: `${account.organization.name} audience`,
+        organizationId: activeOrganization.id,
+        title: eventTitle || `${activeOrganization.name} live session`,
+        audience: `${activeOrganization.name} audience`,
         stage: "Workspace event",
       }),
     });
