@@ -44,6 +44,38 @@ export function createApiRouter({ repository, emitEvent }) {
     res.status(201).json(event);
   });
 
+  router.get(paths("/plans"), (req, res) => {
+    res.json(repository.getPlans());
+  });
+
+  router.post(paths("/register"), async (req, res) => {
+    try {
+      const payload = req.body || {};
+      if (!payload.email || !payload.company || !payload.name) {
+        res.status(400).json({ error: "Name, email, and company are required" });
+        return;
+      }
+      const account = await repository.createOrganizationWithAdmin(payload);
+      res.status(201).json(account);
+    } catch (error) {
+      const isDuplicate = String(error.message || "").includes("UNIQUE");
+      res.status(isDuplicate ? 409 : 500).json({ error: isDuplicate ? "That email is already registered" : error.message });
+    }
+  });
+
+  router.get(paths("/admin/organizations/:organizationId"), async (req, res) => {
+    const account = await repository.getOrganizationAdmin(req.params.organizationId);
+    if (!account) {
+      res.status(404).json({ error: "Organization not found" });
+      return;
+    }
+    res.json(account);
+  });
+
+  router.get(paths("/superadmin/overview"), async (req, res) => {
+    res.json(await repository.getPlatformOverview());
+  });
+
   router.get(paths("/events/:code"), async (req, res) => {
     const event = await requireEvent(req, res);
     if (event) res.json(serializeEvent(event));

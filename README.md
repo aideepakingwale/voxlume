@@ -5,6 +5,9 @@ This is the production-only deployment source for VoxLume. It uses PostgreSQL an
 ## What This Codebase Includes
 
 - React + Vite frontend
+- Marketing landing page
+- User registration with SaaS plan selection
+- SaaS admin and superadmin panels
 - Express API
 - Socket.IO realtime updates
 - PostgreSQL persistence

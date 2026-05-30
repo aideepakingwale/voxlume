@@ -169,15 +169,19 @@ https://YOUR-RENDER-SERVICE.onrender.com
 Verify:
 
 1. The host console loads.
-2. A seeded demo event is visible.
-3. Copy the participant link.
-4. Open the participant link in another browser tab.
-5. Submit a question.
-6. Upvote it.
-7. Activate a poll from the host console.
-8. Answer it as a participant.
-9. Start a quiz and submit an answer.
-10. Open Analytics and download CSV, XLSX, and PDF exports.
+2. The landing page shows features and SaaS plans.
+3. Register a workspace from the Starter, Growth, or Enterprise plan.
+4. The SaaS admin panel opens for the new workspace.
+5. Open `/superadmin` and confirm the new organization appears.
+6. Create or open an event from the SaaS admin panel.
+7. Copy the participant link.
+8. Open the participant link in another browser tab.
+9. Submit a question.
+10. Upvote it.
+11. Activate a poll from the host console.
+12. Answer it as a participant.
+13. Start a quiz and submit an answer.
+14. Open Analytics and download CSV, XLSX, and PDF exports.
 
 ## Step 5: Keep Cost At Zero
 

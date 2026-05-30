@@ -3,11 +3,14 @@ import {
   defaultIntegrations,
   defaultQuizQuestions,
   defaultSecurity,
+  getPlan,
   makeCode,
   makeId,
   normalizeOptions,
+  normalizePlanKey,
   normalizePollType,
   now,
+  SAAS_PLANS,
   serializeEvent,
 } from "./domain.js";
 
@@ -23,6 +26,20 @@ function parseJson(value, fallback) {
   } catch {
     return fallback;
   }
+}
+
+function slugify(value) {
+  return (
+    String(value || "workspace")
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 42) || "workspace"
+  );
+}
+
+function hashPassword(value) {
+  return Buffer.from(String(value || "demo-password")).toString("base64");
 }
 
 function createPool(databaseUrl) {
@@ -68,6 +85,7 @@ export class PostgresEventRepository {
     await this.pool.query(`
       CREATE TABLE IF NOT EXISTS events (
         id TEXT PRIMARY KEY,
+        organization_id TEXT,
         code TEXT NOT NULL UNIQUE,
         title TEXT NOT NULL,
         stage TEXT NOT NULL,
@@ -170,7 +188,32 @@ export class PostgresEventRepository {
         UNIQUE (question_id, participant_id)
       );
 
+      CREATE TABLE IF NOT EXISTS organizations (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        slug TEXT NOT NULL UNIQUE,
+        plan_key TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'active',
+        created_at TIMESTAMPTZ NOT NULL,
+        updated_at TIMESTAMPTZ NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS users (
+        id TEXT PRIMARY KEY,
+        organization_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+        name TEXT NOT NULL,
+        email TEXT NOT NULL UNIQUE,
+        role TEXT NOT NULL DEFAULT 'admin',
+        password_hash TEXT,
+        created_at TIMESTAMPTZ NOT NULL,
+        updated_at TIMESTAMPTZ NOT NULL
+      );
+
+      ALTER TABLE events ADD COLUMN IF NOT EXISTS organization_id TEXT;
+
       CREATE INDEX IF NOT EXISTS idx_events_code ON events(code);
+      CREATE INDEX IF NOT EXISTS idx_events_organization ON events(organization_id);
+      CREATE INDEX IF NOT EXISTS idx_users_organization ON users(organization_id);
       CREATE INDEX IF NOT EXISTS idx_questions_event ON questions(event_id, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_polls_event ON polls(event_id, status);
       CREATE INDEX IF NOT EXISTS idx_poll_responses_poll ON poll_responses(poll_id);
@@ -209,6 +252,13 @@ export class PostgresEventRepository {
 
   async getEvents() {
     const { rows } = await this.query("SELECT code FROM events ORDER BY created_at DESC");
+    return Promise.all(rows.map((row) => this.getSerializedEventByCode(row.code)));
+  }
+
+  async getEventsByOrganization(organizationId) {
+    const { rows } = await this.query("SELECT code FROM events WHERE organization_id = $1 ORDER BY created_at DESC", [
+      organizationId,
+    ]);
     return Promise.all(rows.map((row) => this.getSerializedEventByCode(row.code)));
   }
 
@@ -308,6 +358,7 @@ export class PostgresEventRepository {
 
     return {
       id: eventRow.id,
+      organizationId: eventRow.organization_id,
       code: eventRow.code,
       title: eventRow.title,
       stage: eventRow.stage,
@@ -340,6 +391,7 @@ export class PostgresEventRepository {
     const createdAt = now();
     const event = {
       id: makeId(),
+      organizationId: payload.organizationId || null,
       code,
       title: payload.title?.trim() || "Global Product Town Hall",
       stage: payload.stage?.trim() || "Live meeting",
@@ -352,10 +404,11 @@ export class PostgresEventRepository {
     await this.transaction(async (client) => {
       await this.query(
         `INSERT INTO events (
-          id, code, title, stage, audience, status, security_json, integrations_json, created_at, updated_at
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9, $10)`,
+          id, organization_id, code, title, stage, audience, status, security_json, integrations_json, created_at, updated_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb, $10, $11)`,
         [
           event.id,
+          event.organizationId,
           event.code,
           event.title,
           event.stage,
@@ -710,5 +763,132 @@ export class PostgresEventRepository {
       event.id,
     ]);
     return this.getSerializedEventByCode(code);
+  }
+
+  getPlans() {
+    return SAAS_PLANS;
+  }
+
+  async createOrganizationWithAdmin(input = {}) {
+    const createdAt = now();
+    const organizationId = makeId();
+    const userId = makeId();
+    const planKey = normalizePlanKey(input.planKey);
+    let slug = slugify(input.company || input.name || "workspace");
+    let suffix = 1;
+    while ((await this.query("SELECT 1 FROM organizations WHERE slug = $1", [slug])).rows[0]) {
+      suffix += 1;
+      slug = `${slugify(input.company || "workspace")}-${suffix}`;
+    }
+
+    await this.transaction(async (client) => {
+      await this.query(
+        `INSERT INTO organizations (
+          id, name, slug, plan_key, status, created_at, updated_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+        [
+          organizationId,
+          String(input.company || "New workspace").trim(),
+          slug,
+          planKey,
+          "active",
+          createdAt,
+          createdAt,
+        ],
+        client,
+      );
+      await this.query(
+        `INSERT INTO users (
+          id, organization_id, name, email, role, password_hash, created_at, updated_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+        [
+          userId,
+          organizationId,
+          String(input.name || "Workspace admin").trim(),
+          String(input.email || "").trim().toLowerCase(),
+          "admin",
+          hashPassword(input.password),
+          createdAt,
+          createdAt,
+        ],
+        client,
+      );
+    });
+
+    return this.getOrganizationAdmin(organizationId);
+  }
+
+  async getOrganizationAdmin(organizationId) {
+    const organizationResult = await this.query("SELECT * FROM organizations WHERE id = $1", [organizationId]);
+    const organization = organizationResult.rows[0];
+    if (!organization) return null;
+    const userResult = await this.query(
+      "SELECT id, name, email, role, created_at FROM users WHERE organization_id = $1 ORDER BY created_at ASC",
+      [organizationId],
+    );
+    const users = userResult.rows.map((user) => ({
+      id: user.id,
+      name: user.name,
+      email: user.email,
+      role: user.role,
+      createdAt: user.created_at.toISOString(),
+    }));
+    const events = await this.getEventsByOrganization(organizationId);
+    const plan = getPlan(organization.plan_key);
+    return {
+      organization: {
+        id: organization.id,
+        name: organization.name,
+        slug: organization.slug,
+        planKey: organization.plan_key,
+        plan,
+        status: organization.status,
+        createdAt: organization.created_at.toISOString(),
+      },
+      users,
+      events,
+      usage: {
+        events: events.length,
+        seats: users.length,
+        participants: events.reduce((total, event) => total + event.analytics.participants, 0),
+      },
+    };
+  }
+
+  async getPlatformOverview() {
+    const organizationResult = await this.query("SELECT * FROM organizations ORDER BY created_at DESC");
+    const organizations = await Promise.all(
+      organizationResult.rows.map(async (organization) => {
+        const userCount = await this.query("SELECT COUNT(*)::int AS count FROM users WHERE organization_id = $1", [
+          organization.id,
+        ]);
+        const eventCount = await this.query("SELECT COUNT(*)::int AS count FROM events WHERE organization_id = $1", [
+          organization.id,
+        ]);
+        return {
+          id: organization.id,
+          name: organization.name,
+          slug: organization.slug,
+          planKey: organization.plan_key,
+          plan: getPlan(organization.plan_key),
+          status: organization.status,
+          users: userCount.rows[0].count,
+          events: eventCount.rows[0].count,
+          createdAt: organization.created_at.toISOString(),
+        };
+      }),
+    );
+    const events = await this.getEvents();
+    return {
+      plans: SAAS_PLANS,
+      metrics: {
+        organizations: organizations.length,
+        users: organizations.reduce((total, organization) => total + organization.users, 0),
+        events: events.length,
+        participants: events.reduce((total, event) => total + event.analytics.participants, 0),
+      },
+      organizations,
+      recentEvents: events.slice(0, 8),
+    };
   }
 }

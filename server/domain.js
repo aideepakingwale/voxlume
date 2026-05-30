@@ -27,6 +27,47 @@ export const POLL_PRESETS = {
   },
 };
 
+export const SAAS_PLANS = [
+  {
+    key: "starter",
+    name: "Starter",
+    price: "$0",
+    cadence: "free",
+    eventLimit: 3,
+    seatLimit: 2,
+    participantLimit: 100,
+    features: ["Live Q&A", "Core polls", "CSV exports", "Basic analytics"],
+  },
+  {
+    key: "growth",
+    name: "Growth",
+    price: "$19",
+    cadence: "per month",
+    eventLimit: 25,
+    seatLimit: 10,
+    participantLimit: 1000,
+    features: ["Surveys", "Word clouds", "Quizzes", "PDF/XLSX exports", "AI assistance"],
+  },
+  {
+    key: "enterprise",
+    name: "Enterprise",
+    price: "Custom",
+    cadence: "annual",
+    eventLimit: 250,
+    seatLimit: 100,
+    participantLimit: 10000,
+    features: ["SSO posture", "Compliance controls", "Dedicated success", "Advanced analytics"],
+  },
+];
+
+export function normalizePlanKey(planKey) {
+  return SAAS_PLANS.some((plan) => plan.key === planKey) ? planKey : "starter";
+}
+
+export function getPlan(planKey) {
+  return SAAS_PLANS.find((plan) => plan.key === normalizePlanKey(planKey));
+}
+
 export function now() {
   return new Date().toISOString();
 }
@@ -214,4 +255,3 @@ export function serializeEvent(event) {
     analytics: buildAnalytics(event),
   };
 }
-

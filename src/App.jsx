@@ -1,11 +1,14 @@
 import {
   BarChart3,
   BrainCircuit,
+  Building2,
   Check,
   ChevronRight,
   CirclePlay,
   ClipboardList,
   Cloud,
+  CreditCard,
+  Crown,
   Download,
   FileSpreadsheet,
   FileText,
@@ -21,6 +24,7 @@ import {
   ShieldCheck,
   Sparkles,
   Trophy,
+  UserPlus,
   Users,
   Vote,
   X,
@@ -51,6 +55,8 @@ const pollTypeIcons = {
   yes_no: Vote,
 };
 
+const accountStorageKey = `${APP_CONFIG.storagePrefix}-account`;
+
 async function api(path, options = {}) {
   const response = await fetch(`${API_BASE}${path}`, {
     ...options,
@@ -68,10 +74,14 @@ async function api(path, options = {}) {
 
 function parseRoute() {
   const path = window.location.pathname;
-  const [, route, code] = path.split("/");
+  const [, route, code, extra] = path.split("/");
   if (route === "join") return { view: "participant", code: code?.toUpperCase() || "" };
   if (route === "host") return { view: "host", code: code?.toUpperCase() || "" };
-  return { view: "host", code: "" };
+  if (route === "register") return { view: "register", planKey: code || "starter" };
+  if (route === "admin") return { view: "admin", organizationId: code || "" };
+  if (route === "superadmin") return { view: "superadmin" };
+  if (route === "features") return { view: "landing", section: code || extra || "features" };
+  return { view: "landing" };
 }
 
 function useLiveEvent(code) {
@@ -137,7 +147,15 @@ function App() {
 
   function navigate(nextRoute) {
     setRoute(nextRoute);
-    const path = nextRoute.view === "participant" ? `/join/${nextRoute.code || ""}` : `/host/${nextRoute.code || ""}`;
+    const pathByView = {
+      landing: "/",
+      register: `/register/${nextRoute.planKey || "starter"}`,
+      admin: `/admin/${nextRoute.organizationId || ""}`,
+      superadmin: "/superadmin",
+      participant: `/join/${nextRoute.code || ""}`,
+      host: `/host/${nextRoute.code || ""}`,
+    };
+    const path = pathByView[nextRoute.view] || "/";
     window.history.pushState(nextRoute, "", path);
   }
 
@@ -147,10 +165,407 @@ function App() {
     return () => window.removeEventListener("popstate", onPop);
   }, []);
 
-  return route.view === "participant" ? (
-    <ParticipantExperience initialCode={route.code} onHost={(code) => navigate({ view: "host", code })} />
-  ) : (
-    <HostConsole routeCode={route.code} onJoin={(code) => navigate({ view: "participant", code })} />
+  if (route.view === "participant") {
+    return <ParticipantExperience initialCode={route.code} onHost={(code) => navigate({ view: "host", code })} />;
+  }
+  if (route.view === "host") {
+    return <HostConsole routeCode={route.code} onJoin={(code) => navigate({ view: "participant", code })} />;
+  }
+  if (route.view === "register") {
+    return <RegistrationPage initialPlanKey={route.planKey} onNavigate={navigate} />;
+  }
+  if (route.view === "admin") {
+    return <SaaSAdminPanel organizationId={route.organizationId} onNavigate={navigate} />;
+  }
+  if (route.view === "superadmin") {
+    return <SuperAdminPanel onNavigate={navigate} />;
+  }
+  return <LandingPage onNavigate={navigate} />;
+}
+
+function LandingPage({ onNavigate }) {
+  const [plans, setPlans] = useState([]);
+
+  useEffect(() => {
+    api("/api/plans").then(setPlans).catch(() => setPlans([]));
+  }, []);
+
+  async function openDemoHost() {
+    const events = await api("/api/events");
+    onNavigate({ view: "host", code: events[0]?.code || "" });
+  }
+
+  const features = [
+    { icon: MessageSquareText, title: "Audience Q&A", copy: "Anonymous or named questions with upvotes, pinning, and answered state." },
+    { icon: Vote, title: "Live polls", copy: "Multiple choice, rating, scale, open text, yes/no, and word cloud activities." },
+    { icon: Trophy, title: "Quizzes", copy: "Competitive learning moments with scoring, progress, and leaderboards." },
+    { icon: BarChart3, title: "Analytics", copy: "Engagement dashboards and CSV, XLSX, and PDF exports for post-event reporting." },
+    { icon: BrainCircuit, title: `${APP_CONFIG.productName} AI`, copy: "Generate poll ideas and refine question wording for polished live sessions." },
+    { icon: ShieldCheck, title: "Enterprise posture", copy: "SSO posture, compliance mappings, integrations, and admin-ready controls." },
+  ];
+
+  return (
+    <div className="marketing-shell">
+      <header className="marketing-nav">
+        <button className="brand brand-button" onClick={() => onNavigate({ view: "landing" })}>
+          <div className="brand-mark">{APP_CONFIG.brandInitials}</div>
+          <strong>{APP_CONFIG.productName}</strong>
+        </button>
+        <nav>
+          <button onClick={() => document.getElementById("features")?.scrollIntoView({ behavior: "smooth" })}>Features</button>
+          <button onClick={() => document.getElementById("pricing")?.scrollIntoView({ behavior: "smooth" })}>Plans</button>
+          <button onClick={() => onNavigate({ view: "superadmin" })}>Superadmin</button>
+        </nav>
+        <button className="primary-button" onClick={() => onNavigate({ view: "register", planKey: "starter" })}>
+          <UserPlus size={16} />
+          Start free
+        </button>
+      </header>
+
+      <main>
+        <section className="marketing-hero">
+          <div>
+            <p className="eyebrow">Audience interaction SaaS</p>
+            <h1>Live engagement for meetings, webinars, and hybrid events.</h1>
+            <p className="hero-copy">
+              Launch Q&A, polls, word clouds, quizzes, analytics, exports, and admin-ready workspaces from one professional platform.
+            </p>
+            <div className="hero-actions">
+              <button className="primary-button" onClick={() => onNavigate({ view: "register", planKey: "starter" })}>
+                <RocketIcon />
+                Create workspace
+              </button>
+              <button className="secondary-button" onClick={openDemoHost}>
+                <CirclePlay size={16} />
+                Open live demo
+              </button>
+            </div>
+          </div>
+          <div className="landing-visual">
+            <div className="hero-visual-header">
+              <span className="preview-dot" />
+              <strong>Live engagement room</strong>
+              <em>Q7M21A</em>
+            </div>
+            <div className="preview-question">
+              <span className="preview-icon"><MessageSquareText size={18} /></span>
+              <div>
+                <small>Top question</small>
+                <p>Which roadmap decision should the audience help prioritize today?</p>
+              </div>
+              <strong>42</strong>
+            </div>
+            <div className="mini-dashboard">
+              <MetricCard icon={Users} label="Participants" value="1.2k" />
+              <MetricCard icon={Vote} label="Poll responses" value="842" accent="green" />
+              <MetricCard icon={Trophy} label="Quiz answers" value="396" accent="amber" />
+            </div>
+          </div>
+        </section>
+
+        <section className="landing-section" id="features">
+          <div className="section-heading-centered">
+            <p className="section-label">Platform features</p>
+            <h2>Everything a live engagement team expects</h2>
+          </div>
+          <div className="landing-feature-grid">
+            {features.map((feature) => {
+              const Icon = feature.icon;
+              return (
+                <article className="landing-feature-card" key={feature.title}>
+                  <span className="feature-icon"><Icon size={22} /></span>
+                  <h3>{feature.title}</h3>
+                  <p>{feature.copy}</p>
+                </article>
+              );
+            })}
+          </div>
+        </section>
+
+        <section className="landing-section" id="pricing">
+          <div className="section-heading-centered">
+            <p className="section-label">SaaS plans</p>
+            <h2>Register with the plan that fits your audience</h2>
+          </div>
+          <PlanGrid plans={plans} selectedPlanKey="" onSelect={(planKey) => onNavigate({ view: "register", planKey })} />
+        </section>
+      </main>
+    </div>
+  );
+}
+
+function RocketIcon() {
+  return <Sparkles size={16} />;
+}
+
+function PlanGrid({ plans, selectedPlanKey, onSelect }) {
+  return (
+    <div className="plan-grid">
+      {plans.map((plan) => (
+        <button className={classNames("plan-card", selectedPlanKey === plan.key && "active")} key={plan.key} onClick={() => onSelect(plan.key)}>
+          <span className="plan-icon">{plan.key === "enterprise" ? <Crown size={22} /> : <CreditCard size={22} />}</span>
+          <strong>{plan.name}</strong>
+          <em>{plan.price}</em>
+          <small>{plan.cadence}</small>
+          <ul>
+            <li>{plan.eventLimit} events</li>
+            <li>{plan.seatLimit} admin seats</li>
+            <li>{plan.participantLimit.toLocaleString()} participants</li>
+          </ul>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function RegistrationPage({ initialPlanKey, onNavigate }) {
+  const [plans, setPlans] = useState([]);
+  const [planKey, setPlanKey] = useState(initialPlanKey || "starter");
+  const [form, setForm] = useState({ name: "", email: "", company: "", password: "" });
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    api("/api/plans").then(setPlans).catch((err) => setError(err.message));
+  }, []);
+
+  async function submitRegistration(event) {
+    event.preventDefault();
+    setError("");
+    try {
+      const account = await api("/api/register", {
+        method: "POST",
+        body: JSON.stringify({ ...form, planKey }),
+      });
+      localStorage.setItem(accountStorageKey, JSON.stringify(account));
+      onNavigate({ view: "admin", organizationId: account.organization.id });
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  return (
+    <div className="auth-shell">
+      <button className="brand brand-button" onClick={() => onNavigate({ view: "landing" })}>
+        <div className="brand-mark">{APP_CONFIG.brandInitials}</div>
+        <strong>{APP_CONFIG.productName}</strong>
+      </button>
+      <section className="auth-grid">
+        <div>
+          <p className="eyebrow">Create SaaS workspace</p>
+          <h1>Register your team and choose a plan.</h1>
+          <p className="hero-copy">Your SaaS admin workspace is created immediately with plan limits, users, and event operations.</p>
+          <PlanGrid plans={plans} selectedPlanKey={planKey} onSelect={setPlanKey} />
+        </div>
+        <form className="registration-card" onSubmit={submitRegistration}>
+          <p className="section-label">Workspace admin</p>
+          <h2>Account details</h2>
+          <label>
+            Full name
+            <input value={form.name} onChange={(event) => setForm((value) => ({ ...value, name: event.target.value }))} placeholder="Avery Stone" required />
+          </label>
+          <label>
+            Work email
+            <input type="email" value={form.email} onChange={(event) => setForm((value) => ({ ...value, email: event.target.value }))} placeholder="avery@company.com" required />
+          </label>
+          <label>
+            Company
+            <input value={form.company} onChange={(event) => setForm((value) => ({ ...value, company: event.target.value }))} placeholder="Northstar Events" required />
+          </label>
+          <label>
+            Password
+            <input type="password" value={form.password} onChange={(event) => setForm((value) => ({ ...value, password: event.target.value }))} placeholder="Create password" required />
+          </label>
+          {error && <div className="form-error">{error}</div>}
+          <button className="primary-button" type="submit">
+            <UserPlus size={16} />
+            Create workspace
+          </button>
+        </form>
+      </section>
+    </div>
+  );
+}
+
+function SaaSAdminPanel({ organizationId, onNavigate }) {
+  const [account, setAccount] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [eventTitle, setEventTitle] = useState("");
+
+  const resolvedOrganizationId =
+    organizationId ||
+    (() => {
+      try {
+        return JSON.parse(localStorage.getItem(accountStorageKey) || "{}").organization?.id || "";
+      } catch {
+        return "";
+      }
+    })();
+
+  useEffect(() => {
+    if (!resolvedOrganizationId) {
+      setLoading(false);
+      return;
+    }
+    api(`/api/admin/organizations/${resolvedOrganizationId}`)
+      .then(setAccount)
+      .catch((err) => setError(err.message))
+      .finally(() => setLoading(false));
+  }, [resolvedOrganizationId]);
+
+  async function createWorkspaceEvent() {
+    const event = await api("/api/events", {
+      method: "POST",
+      body: JSON.stringify({
+        organizationId: account.organization.id,
+        title: eventTitle || `${account.organization.name} live session`,
+        audience: `${account.organization.name} audience`,
+        stage: "Workspace event",
+      }),
+    });
+    onNavigate({ view: "host", code: event.code });
+  }
+
+  if (loading) return <StateMessage title="Loading admin workspace" />;
+  if (!resolvedOrganizationId || error) {
+    return (
+      <div className="admin-shell">
+        <StateMessage title={error || "No SaaS admin workspace selected"} />
+        <button className="primary-button" onClick={() => onNavigate({ view: "register", planKey: "starter" })}>Register workspace</button>
+      </div>
+    );
+  }
+
+  const plan = account.organization.plan;
+  return (
+    <div className="admin-shell">
+      <AdminHeader title={account.organization.name} eyebrow="SaaS admin" onNavigate={onNavigate} />
+      <section className="admin-hero">
+        <div>
+          <p className="section-label">Current plan</p>
+          <h1>{plan.name} workspace</h1>
+          <p className="hero-copy">Manage seats, usage, live events, and subscription limits for this SaaS tenant.</p>
+        </div>
+        <div className="admin-stat-grid">
+          <MetricCard icon={CirclePlay} label="Events" value={`${account.usage.events}/${plan.eventLimit}`} />
+          <MetricCard icon={Users} label="Seats" value={`${account.usage.seats}/${plan.seatLimit}`} accent="green" />
+          <MetricCard icon={BarChart3} label="Participants" value={account.usage.participants} accent="amber" />
+        </div>
+      </section>
+      <section className="content-grid two">
+        <div className="panel">
+          <div className="panel-heading">
+            <div>
+              <p className="section-label">Workspace events</p>
+              <h2>Create and manage live rooms</h2>
+            </div>
+          </div>
+          <div className="inline-composer">
+            <input value={eventTitle} onChange={(event) => setEventTitle(event.target.value)} placeholder="Customer webinar" />
+            <button className="primary-button" onClick={createWorkspaceEvent}><Plus size={16} />Create event</button>
+          </div>
+          <div className="stack">
+            {account.events.map((event) => (
+              <button className="admin-row" key={event.code} onClick={() => onNavigate({ view: "host", code: event.code })}>
+                <span><strong>{event.title}</strong><small>{event.code} · {event.analytics.participants} participants</small></span>
+                <ChevronRight size={16} />
+              </button>
+            ))}
+            {!account.events.length && <StateMessage title="No workspace events yet" />}
+          </div>
+        </div>
+        <div className="panel">
+          <div className="panel-heading">
+            <div>
+              <p className="section-label">Admins</p>
+              <h2>Tenant users</h2>
+            </div>
+          </div>
+          <div className="stack">
+            {account.users.map((user) => (
+              <div className="admin-row static" key={user.id}>
+                <span><strong>{user.name}</strong><small>{user.email}</small></span>
+                <span className="badge">{user.role}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function SuperAdminPanel({ onNavigate }) {
+  const [overview, setOverview] = useState(null);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    api("/api/superadmin/overview").then(setOverview).catch((err) => setError(err.message));
+  }, []);
+
+  if (error) return <StateMessage title={error} tone="danger" />;
+  if (!overview) return <StateMessage title="Loading platform overview" />;
+
+  return (
+    <div className="admin-shell">
+      <AdminHeader title="Platform command center" eyebrow="Superadmin" onNavigate={onNavigate} />
+      <section className="metric-grid">
+        <MetricCard icon={Building2} label="Organizations" value={overview.metrics.organizations} />
+        <MetricCard icon={Users} label="Admin users" value={overview.metrics.users} accent="green" />
+        <MetricCard icon={CirclePlay} label="Events" value={overview.metrics.events} accent="amber" />
+        <MetricCard icon={BarChart3} label="Participants" value={overview.metrics.participants} accent="rose" />
+      </section>
+      <section className="content-grid two">
+        <div className="panel">
+          <div className="panel-heading">
+            <div>
+              <p className="section-label">Tenants</p>
+              <h2>Organizations and SaaS admins</h2>
+            </div>
+          </div>
+          <div className="stack">
+            {overview.organizations.map((organization) => (
+              <button className="admin-row" key={organization.id} onClick={() => onNavigate({ view: "admin", organizationId: organization.id })}>
+                <span>
+                  <strong>{organization.name}</strong>
+                  <small>{organization.users} users · {organization.events} events · {organization.status}</small>
+                </span>
+                <span className="badge">{organization.plan.name}</span>
+              </button>
+            ))}
+            {!overview.organizations.length && <StateMessage title="No organizations registered yet" />}
+          </div>
+        </div>
+        <div className="panel">
+          <div className="panel-heading">
+            <div>
+              <p className="section-label">Plan catalog</p>
+              <h2>SaaS plans</h2>
+            </div>
+          </div>
+          <PlanGrid plans={overview.plans} selectedPlanKey="" onSelect={(planKey) => onNavigate({ view: "register", planKey })} />
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function AdminHeader({ title, eyebrow, onNavigate }) {
+  return (
+    <header className="admin-header">
+      <button className="brand brand-button" onClick={() => onNavigate({ view: "landing" })}>
+        <div className="brand-mark">{APP_CONFIG.brandInitials}</div>
+        <strong>{APP_CONFIG.productName}</strong>
+      </button>
+      <div>
+        <p className="section-label">{eyebrow}</p>
+        <h2>{title}</h2>
+      </div>
+      <div className="topbar-actions">
+        <button className="secondary-button" onClick={() => onNavigate({ view: "landing" })}>Landing</button>
+        <button className="secondary-button" onClick={() => onNavigate({ view: "superadmin" })}>Superadmin</button>
+      </div>
+    </header>
   );
 }
 
@@ -252,6 +667,24 @@ function HostConsole({ routeCode, onJoin }) {
           </div>
         </div>
 
+        <div className="sidebar-cta">
+          <p className="section-label">New users</p>
+          <h3>Register a SaaS workspace</h3>
+          <p>
+            Create a plan-based account for a new tenant, then hand them an admin workspace instantly.
+          </p>
+          <div className="sidebar-cta-actions">
+            <button className="primary-button" onClick={() => window.location.assign("/register/starter")}>
+              <UserPlus size={16} />
+              Register
+            </button>
+            <button className="secondary-button" onClick={() => onNavigate({ view: "landing" })}>
+              <Sparkles size={16} />
+              Plans
+            </button>
+          </div>
+        </div>
+
         <div className="event-list">
           <p className="section-label">Workspaces</p>
           {events.map((item) => (
@@ -290,6 +723,10 @@ function HostConsole({ routeCode, onJoin }) {
                   <button className="primary-button" onClick={() => onJoin(event.code)}>
                     <QrCode size={16} />
                     Participant view
+                  </button>
+                  <button className="secondary-button" onClick={() => onNavigate({ view: "register", planKey: "starter" })}>
+                    <UserPlus size={16} />
+                    Register user
                   </button>
                   <CopyLinkButton link={`${window.location.origin}/join/${event.code}`} />
                 </div>
