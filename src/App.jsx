@@ -638,8 +638,24 @@ function SuperAdminPanel({ onNavigate }) {
   }
 
   useEffect(() => {
-    api("/api/superadmin/overview").then(setOverview).catch((err) => setError(err.message));
-  }, []);
+    if (!auth?.token) return;
+    api("/api/superadmin/overview")
+      .then((payload) => {
+        setOverview(payload);
+        setError("");
+      })
+      .catch((err) => {
+        const message = String(err.message || "");
+        if (/(unauthori|authentication required|forbidden)/i.test(message)) {
+          localStorage.removeItem(superadminStorageKey);
+          setAuth(null);
+          setOverview(null);
+          setError("");
+          return;
+        }
+        setError(message);
+      });
+  }, [auth?.token]);
 
   if (!auth?.token) {
     return (
